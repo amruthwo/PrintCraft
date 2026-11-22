@@ -46,7 +46,27 @@ twice the panel size each way: back (left) and front (right) on the bottom
 half, the inside upside down on the top half. Fold the top half back, then
 fold in half. Half-fold and note cards print two sheets: back (left) and
 front (right) on the first, the inside on the right half of the second, to
-print on the other side.
+print on the other side. A wide (top-fold) half-fold card prints upright:
+back upside down above the fold, front below it; the inside on the lower
+half of the second sheet.
+
+## Paper sizes
+
+File > Page Setup and New Project offer (`kinds::PAPERS`): Letter 8½ × 11,
+Legal 8½ × 14, Tabloid 11 × 17, Half Letter 5½ × 8½, A4, A5, A3, photo
+4 × 6, 5 × 7 and 8 × 10, Scrapbook 12 × 12, or a custom size, tall or wide.
+How a sheet becomes a page (`Kind::paper_use`, `kinds::page_for_paper`):
+
+| Kinds | Page |
+|---|---|
+| Sign, letterhead, newsletter, fax cover, sticker, iron-on, calendar, certificate, brochure, scrapbook | the whole sheet |
+| Quarter-fold card | each panel a quarter of the sheet |
+| Half-fold card | each panel half the sheet (tall card: side by side; wide card: one above the other, folding at the top) |
+| Labels, business cards, postcards, envelopes, banners | their own sheet or size lists |
+
+"Fit what's on the page" scales every item evenly by the smaller of the
+two size changes and centres the result; text sizes follow; page borders
+keep their distance from the edge.
 
 ## Frames and soft effects
 
@@ -111,10 +131,37 @@ A7 7.25 × 5.25, and the ISO sizes DL 220 × 110 mm, C5 229 × 162 mm,
 C6 162 × 114 mm, C65 229 × 114 mm. Larger papers offered: 11 × 17 and
 8.5 × 14.
 
+Address merge (`src/merge.rs`): text fields «Address», «Name», «Street»,
+«City», «State», «Zip», «Phone», «Email». With people chosen in Print, labels
+take one person per label in order from the "start at" place (new sheets
+as needed); any other kind prints its whole set of sheets once per person.
+
+Note cards print two to a letter sheet: a wide card is a 5½ × 8½ half
+sheet folding at the top (back upside down above the fold, front below);
+a tall card folds at the side. The inside goes on the second sheet; cut
+the sheets in half, then fold.
+
 Rules: labels cycle through the project's pages (one design per page,
 repeated across the sheet); business cards and postcards print one full
 sheet per side (fronts, then backs). "Start at label" skips that many places
-on the first sheet. Note cards print 2 to an 8.5 × 5.5 sheet.
+on the first sheet.
+
+## Lines and flourishes
+
+Line styles (`Item::line_style`, `raster::LINE_STYLES`): solid, dashed
+(3 on, 2 off, in line widths), long dashes (7/3), dotted (round dots 2.2
+widths apart), dash and dot, double (two lines with a gap, 1.6 widths in
+all), wavy and zigzag (1.4 widths high, 7 long), and scribble (two wobbly
+passes). Thickness runs from 0 (no line) to 24 pt; presets None 0,
+Hairline 0.25, Thin 1, Medium 2, Thick 4, Heavy 8. A Line item is drawn
+straight across the middle of its box; resizing changes only its length.
+
+Flourishes and dividers (`Content::Ornament`, `raster::ORNAMENT_NAMES`)
+are drawn in the line color with the fill color as the accent.
+
+Headline outlines are drawn around all the letters together (stroked on a
+layer, the letters' insides cleared), so joined letters in script fonts
+don't show lines where they meet.
 
 ## Headline warp
 

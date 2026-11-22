@@ -17,6 +17,8 @@ pub struct Place {
     pub x: f32,
     pub y: f32,
     pub upside_down: bool,
+    /// Address merge: the person whose details fill this copy.
+    pub record: Option<crate::settings::Contact>,
 }
 
 pub struct Sheet {
@@ -27,7 +29,7 @@ pub struct Sheet {
 
 /// How a project goes onto paper (inches). Fold layouts: see docs/DESIGN.md.
 pub fn sheets(p: &Project) -> Vec<Sheet> {
-    let one = |panel| Place { panel, x: 0.0, y: 0.0, upside_down: false };
+    let one = |panel| Place { panel, x: 0.0, y: 0.0, upside_down: false, record: None };
     match p.kind {
         Kind::CardQuarter if p.panels.len() >= 3 => {
             // Letter, portrait: fold top half back, then fold in half.
@@ -36,17 +38,47 @@ pub fn sheets(p: &Project) -> Vec<Sheet> {
                 w: pw * 2.0,
                 h: ph * 2.0,
                 places: vec![
-                    Place { panel: 0, x: pw, y: ph, upside_down: false },
-                    Place { panel: 2, x: 0.0, y: ph, upside_down: false },
-                    Place { panel: 1, x: 0.0, y: 0.0, upside_down: true },
+                    Place { panel: 0, x: pw, y: ph, upside_down: false, record: None },
+                    Place { panel: 2, x: 0.0, y: ph, upside_down: false, record: None },
+                    Place { panel: 1, x: 0.0, y: 0.0, upside_down: true, record: None },
                 ],
             }]
         }
-        Kind::CardHalf | Kind::NoteCard if p.panels.len() >= 3 => {
+        Kind::CardHalf if p.panels.len() >= 3 && p.width > p.height => {
+            // A wide card folds at the top: back (upside down) above the
+            // fold, front below it; the inside goes on the lower half of the
+            // other side.
             let (pw, ph) = (p.width, p.height);
             vec![
-                Sheet { w: pw * 2.0, h: ph, places: vec![Place { panel: 2, x: 0.0, y: 0.0, upside_down: false }, Place { panel: 0, x: pw, y: 0.0, upside_down: false }] },
-                Sheet { w: pw * 2.0, h: ph, places: vec![Place { panel: 1, x: pw, y: 0.0, upside_down: false }] },
+                Sheet { w: pw, h: ph * 2.0, places: vec![Place { panel: 2, x: 0.0, y: 0.0, upside_down: true, record: None }, Place { panel: 0, x: 0.0, y: ph, upside_down: false, record: None }] },
+                Sheet { w: pw, h: ph * 2.0, places: vec![Place { panel: 1, x: 0.0, y: ph, upside_down: false, record: None }] },
+            ]
+        }
+        Kind::NoteCard if p.panels.len() >= 3 => {
+            // Two note cards to a letter sheet, to cut apart. A wide card
+            // folds at the top (each card is a 5½ × 8½ half sheet: back
+            // upside down above the fold, front below); a tall card folds
+            // at the side (back left, front right).
+            let (pw, ph) = (p.width, p.height);
+            if pw > ph {
+                let halves = [0.0, pw];
+                vec![
+                    Sheet { w: pw * 2.0, h: ph * 2.0, places: halves.iter().flat_map(|&x| [Place { panel: 2, x, y: 0.0, upside_down: true, record: None }, Place { panel: 0, x, y: ph, upside_down: false, record: None }]).collect() },
+                    Sheet { w: pw * 2.0, h: ph * 2.0, places: halves.iter().map(|&x| Place { panel: 1, x, y: ph, upside_down: false, record: None }).collect() },
+                ]
+            } else {
+                let halves = [0.0, ph];
+                vec![
+                    Sheet { w: pw * 2.0, h: ph * 2.0, places: halves.iter().flat_map(|&y| [Place { panel: 2, x: 0.0, y, upside_down: false, record: None }, Place { panel: 0, x: pw, y, upside_down: false, record: None }]).collect() },
+                    Sheet { w: pw * 2.0, h: ph * 2.0, places: halves.iter().map(|&y| Place { panel: 1, x: pw, y, upside_down: false, record: None }).collect() },
+                ]
+            }
+        }
+        Kind::CardHalf if p.panels.len() >= 3 => {
+            let (pw, ph) = (p.width, p.height);
+            vec![
+                Sheet { w: pw * 2.0, h: ph, places: vec![Place { panel: 2, x: 0.0, y: 0.0, upside_down: false, record: None }, Place { panel: 0, x: pw, y: 0.0, upside_down: false, record: None }] },
+                Sheet { w: pw * 2.0, h: ph, places: vec![Place { panel: 1, x: pw, y: 0.0, upside_down: false, record: None }] },
             ]
         }
         Kind::Label | Kind::BusinessCard | Kind::Postcard => {
@@ -58,7 +90,7 @@ pub fn sheets(p: &Project) -> Vec<Sheet> {
                 for r in 0..l.rows {
                     for c in 0..l.cols {
                         let n = (r * l.cols + c) as usize;
-                        places.push(Place { panel: panel_of(n), x: l.left + c as f32 * (p.width + l.gap_x), y: l.top + r as f32 * (p.height + l.gap_y), upside_down: false });
+                        places.push(Place { panel: panel_of(n), x: l.left + c as f32 * (p.width + l.gap_x), y: l.top + r as f32 * (p.height + l.gap_y), upside_down: false, record: None });
                     }
                 }
                 Sheet { w: l.paper_w, h: l.paper_h, places }
@@ -80,7 +112,7 @@ pub fn sheets(p: &Project) -> Vec<Sheet> {
             let (sw, sh): (f32, f32) = if b.tall { (8.5, 11.0) } else { (11.0, 8.5) };
             let n = (p.width / seg).ceil().max(1.0) as usize;
             (0..n)
-                .map(|i| Sheet { w: sw, h: sh.max(p.height), places: vec![Place { panel: 0, x: crate::model::BANNER_MARGIN - i as f32 * seg, y: 0.0, upside_down: false }] })
+                .map(|i| Sheet { w: sw, h: sh.max(p.height), places: vec![Place { panel: 0, x: crate::model::BANNER_MARGIN - i as f32 * seg, y: 0.0, upside_down: false, record: None }] })
                 .collect()
         }
         _ => (0..p.panels.len()).map(|i| Sheet { w: p.width, h: p.height, places: vec![one(i)] }).collect(),
@@ -89,6 +121,9 @@ pub fn sheets(p: &Project) -> Vec<Sheet> {
 
 /// Sheets with print-time choices applied (label start position).
 pub fn arranged_sheets(p: &Project, o: &PrintOptions) -> Vec<Sheet> {
+    if !o.merge.is_empty() && crate::merge::has_fields(p) {
+        return merged_sheets(p, o);
+    }
     let mut all = sheets(p);
     if o.start_at > 1
         && matches!(p.kind, Kind::Label | Kind::BusinessCard)
@@ -100,15 +135,49 @@ pub fn arranged_sheets(p: &Project, o: &PrintOptions) -> Vec<Sheet> {
     all
 }
 
+/// Address merge: labels take one person each, filling the sheet in order
+/// (from the "start at" position); anything else prints its whole set of
+/// sheets once per person.
+fn merged_sheets(p: &Project, o: &PrintOptions) -> Vec<Sheet> {
+    let base = sheets(p);
+    if p.kind == Kind::Label
+        && let Some(grid) = base.first()
+    {
+        let slots: Vec<&Place> = grid.places.iter().collect();
+        let mut out: Vec<Sheet> = Vec::new();
+        let mut slot = (o.start_at.max(1) as usize - 1).min(slots.len().saturating_sub(1));
+        for c in &o.merge {
+            if out.is_empty() || slot >= slots.len() {
+                if !out.is_empty() {
+                    slot = 0;
+                }
+                out.push(Sheet { w: grid.w, h: grid.h, places: Vec::new() });
+            }
+            let s = slots[slot];
+            if let Some(sheet) = out.last_mut() {
+                sheet.places.push(Place { panel: s.panel, x: s.x, y: s.y, upside_down: s.upside_down, record: Some(c.clone()) });
+            }
+            slot += 1;
+        }
+        return out;
+    }
+    o.merge
+        .iter()
+        .flat_map(|c| base.iter().map(move |s| Sheet { w: s.w, h: s.h, places: s.places.iter().map(|pl| Place { panel: pl.panel, x: pl.x, y: pl.y, upside_down: pl.upside_down, record: Some(c.clone()) }).collect() }))
+        .collect()
+}
+
 pub fn render_sheet(p: &Project, sheet: &Sheet, fonts: &FontBook, pics: &PictureCache, ppi: f32) -> Option<Pixmap> {
     let mut out = Pixmap::new((sheet.w * ppi).round() as u32, (sheet.h * ppi).round() as u32)?;
     out.fill(tiny_skia::Color::WHITE);
     let mut cache: Vec<Option<Pixmap>> = (0..p.panels.len()).map(|_| None).collect();
     for pl in &sheet.places {
-        if cache[pl.panel].is_none() {
+        // A merged copy is drawn with that person's details filled in.
+        let merged = pl.record.as_ref().and_then(|c| render_panel(&crate::merge::fill(p, c), pl.panel, fonts, pics, ppi));
+        if merged.is_none() && cache[pl.panel].is_none() {
             cache[pl.panel] = render_panel(p, pl.panel, fonts, pics, ppi);
         }
-        let Some(img) = &cache[pl.panel] else { continue };
+        let Some(img) = merged.as_ref().or(cache[pl.panel].as_ref()) else { continue };
         let (x, y) = (pl.x * ppi, pl.y * ppi);
         let t = if pl.upside_down {
             Transform::from_row(-1.0, 0.0, 0.0, -1.0, x + img.width() as f32, y + img.height() as f32)
@@ -163,6 +232,8 @@ pub struct PrintOptions {
     pub reverse: bool,
     /// Labels and cards: start at this position on the first sheet (1 = first).
     pub start_at: u32,
+    /// Address merge: print a copy for each of these people.
+    pub merge: Vec<crate::settings::Contact>,
 }
 
 impl Default for PrintOptions {
@@ -181,6 +252,7 @@ impl Default for PrintOptions {
             nudge: (0.0, 0.0),
             reverse: false,
             start_at: 1,
+            merge: Vec::new(),
         }
     }
 }
@@ -388,6 +460,54 @@ pub fn print_with(p: &Project, fonts: &FontBook, pics: &PictureCache, o: &PrintO
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "windows")))]
         {
             Ok(format!("Saved for printing at {}", path.display()))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::Contact;
+
+    fn person(name: &str) -> Contact {
+        Contact { name: name.into(), street: "1 Main St".into(), city: "Mesa".into(), region: "AZ".into(), postcode: "85201".into(), ..Default::default() }
+    }
+
+    #[test]
+    fn labels_take_one_person_each() {
+        let mut p = Project::new(Kind::Label, false);
+        let look = crate::model::TextLook::default();
+        p.panels[0].items.push(crate::model::Item::new(1, crate::model::Frame::new(0.1, 0.1, 2.0, 0.8), crate::model::Content::Text { text: "«Address»".into(), look, shape: None, fit: false, runs: Vec::new() }));
+        let people: Vec<Contact> = (0..35).map(|i| person(&format!("Person {i}"))).collect();
+        // 30 to a sheet, starting at the 3rd label: 28 on the first sheet, 7 on the second.
+        let o = PrintOptions { merge: people, start_at: 3, ..Default::default() };
+        let s = arranged_sheets(&p, &o);
+        assert_eq!(s.len(), 2);
+        assert_eq!((s[0].places.len(), s[1].places.len()), (28, 7));
+        assert_eq!(s[1].places[0].record.as_ref().map(|c| c.name.as_str()), Some("Person 28"));
+    }
+
+    #[test]
+    fn envelopes_print_once_per_person() {
+        let mut p = Project::new(Kind::Envelope, true);
+        let look = crate::model::TextLook::default();
+        p.panels[0].items.push(crate::model::Item::new(1, crate::model::Frame::new(4.0, 2.0, 4.0, 1.0), crate::model::Content::Text { text: "«Name»".into(), look, shape: None, fit: false, runs: Vec::new() }));
+        let o = PrintOptions { merge: vec![person("A"), person("B"), person("C")], ..Default::default() };
+        assert_eq!(arranged_sheets(&p, &o).len(), 3);
+        // Without merge fields, choosing people changes nothing.
+        p.panels[0].items.clear();
+        assert_eq!(arranged_sheets(&p, &o).len(), 1);
+    }
+
+    #[test]
+    fn note_cards_print_two_to_a_letter_sheet() {
+        for landscape in [true, false] {
+            let p = Project::new(Kind::NoteCard, landscape);
+            let s = sheets(&p);
+            assert_eq!(s.len(), 2);
+            let (w, h) = (s[0].w, s[0].h);
+            assert!((w.max(h) - 11.0).abs() < 1e-3 && (w.min(h) - 8.5).abs() < 1e-3, "{w} × {h}");
+            assert_eq!((s[0].places.len(), s[1].places.len()), (4, 2));
         }
     }
 }

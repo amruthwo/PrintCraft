@@ -74,3 +74,38 @@ pub fn pack_sheet(args: &[PathBuf]) -> Result<String, String> {
     sheet.save_png(out).map_err(|e| e.to_string())?;
     Ok(format!("{} packs, {} items ({} with data); drew {ok} of {}", lib.packs.len(), lib.items.len(), ready.len(), picks.len()))
 }
+
+/// Every ready-made design, each page side by side, on one picture (for
+/// checking how they look): `printcraft --design-sheet out.png`.
+pub fn design_sheet(out: PathBuf) -> Result<String, String> {
+    let fonts = FontBook::new();
+    for _ in 0..100 {
+        if !fonts.scanning() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let pics = PictureCache::default();
+    let designs = crate::templates::all();
+    let row_h = 260u32;
+    let rows: Vec<Vec<tiny_skia::Pixmap>> = designs
+        .iter()
+        .map(|d| {
+            let p = (d.build)();
+            let ppi = (row_h - 20) as f32 / p.height.max(p.width / 4.0);
+            (0..p.panels.len()).filter_map(|i| crate::raster::render_panel(&p, i, &fonts, &pics, ppi)).collect()
+        })
+        .collect();
+    let width = rows.iter().map(|r| r.iter().map(|pm| pm.width() + 12).sum::<u32>() + 12).max().unwrap_or(100);
+    let mut sheet = tiny_skia::Pixmap::new(width, row_h * rows.len() as u32).ok_or("too big")?;
+    sheet.fill(tiny_skia::Color::from_rgba8(225, 225, 225, 255));
+    for (k, r) in rows.iter().enumerate() {
+        let mut x = 12;
+        for pm in r {
+            sheet.draw_pixmap(x, (k as u32 * row_h + 10) as i32, pm.as_ref(), &tiny_skia::PixmapPaint::default(), tiny_skia::Transform::identity(), None);
+            x += pm.width() as i32 + 12;
+        }
+    }
+    sheet.save_png(&out).map_err(|e| e.to_string())?;
+    Ok(format!("{} designs drawn to {}", designs.len(), out.display()))
+}

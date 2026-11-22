@@ -64,7 +64,7 @@ fn clipboard_look() -> Option<(u64, Option<(u32, u32, Vec<u8>)>, Option<String>)
     let url = ((t1.starts_with("https://") || t1.starts_with("http://")) && !t1.contains(char::is_whitespace)).then(|| t1.to_string());
     Some((h.finish(), None, url))
 }
-use crate::photo::{Adjust, Effect};
+
 use crate::settings::Contact;
 
 pub struct GalleryState {
@@ -95,20 +95,20 @@ pub struct GalleryState {
     pub searched: bool,
 }
 
-pub struct PhotoState {
-    pub item: u64,
-    pub asset: u64,
-    pub tab: u8,
-    pub adjust: Adjust,
-    pub preview: Option<TextureHandle>,
-    pub previewed: Option<Adjust>,
-    /// Cut-out tool: 0 shape, 1 draw outline, 2 magic wand, 3 pick a color, 4 remove background.
-    pub tool: u8,
-    pub how: crate::photo::Combine,
-    pub tolerance: f32,
-    pub soft: f32,
-    pub lasso: Vec<(f32, f32)>,
-    pub work: Option<(([f32; 4], u8), image::RgbaImage)>,
+pub use crate::photo_editor::PhotoState;
+
+/// Page Setup: the paper (or sheet, envelope, banner length) and direction.
+pub struct PageSetupState {
+    /// Index into kinds::PAPERS; PAPERS.len() means a custom size.
+    pub paper: usize,
+    pub custom: (f32, f32),
+    pub landscape: bool,
+    /// Scale and centre what's on the pages to the new size.
+    pub fit: bool,
+    /// Label/card sheet or envelope size.
+    pub option: usize,
+    pub sheets: u32,
+    pub tall: bool,
 }
 
 pub struct HeadlineState {
@@ -128,11 +128,22 @@ pub struct HeadlineState {
 pub enum Dialog {
     Welcome,
     /// `option`: which label sheet or envelope size; `sheets`/`tall`: banners.
-    NewProject { kind: Kind, landscape: bool, option: usize, sheets: u32, tall: bool },
+    /// `design`: 0 blank, n = the nth ready-made design for the kind.
+    /// `cal`: the calendar maker's choices (calendars).
+    NewProject { kind: Kind, landscape: bool, option: usize, sheets: u32, tall: bool, design: usize, cal: Box<crate::calendar::CalendarOptions> },
+    /// Calendar Maker for the open calendar.
+    CalendarMaker(Box<crate::calendar::CalendarOptions>),
     Message { title: String, body: String },
     Headline(Box<HeadlineState>),
     Gallery(Box<GalleryState>),
     Photo(Box<PhotoState>),
+    PageSetup(Box<PageSetupState>),
+    /// Where the new picture for Replace Picture comes from.
+    ReplacePicture,
+    /// Flourishes & Dividers to add to the page.
+    Ornaments,
+    Update(Box<crate::update::UpdateState>),
+    Report(Box<crate::report::ReportState>),
     /// Shadow: amount = distance, angle, size = softness. Glow: size.
     /// Frame: style number.
     Effects { which: u8, amount: f32, angle: f32, size: f32, color: Rgba, style: u8 },
@@ -164,7 +175,7 @@ impl Dialog {
         Dialog::Welcome
     }
     pub fn new_project() -> Self {
-        Dialog::NewProject { kind: Kind::CardQuarter, landscape: Kind::CardQuarter.default_landscape(), option: 0, sheets: 4, tall: false }
+        Dialog::NewProject { kind: Kind::CardQuarter, landscape: Kind::CardQuarter.default_landscape(), option: 0, sheets: 4, tall: false, design: 0, cal: Box::default() }
     }
     pub fn message(title: &str, body: &str) -> Self {
         Dialog::Message { title: title.into(), body: body.into() }
@@ -191,6 +202,35 @@ impl Dialog {
             keep: false,
             mine: crate::library::list(),
             searched: false,
+        }))
+    }
+    /// Google Images in the web browser, watching the clipboard for a
+    /// copied picture (when PrintCraft's own Google window can't open).
+    pub fn google_in_browser(words: &str) -> Self {
+        let mut d = Dialog::gallery(1);
+        if let Dialog::Gallery(g) = &mut d {
+            g.words = words.trim().to_string();
+            g.in_browser = true;
+            g.clip_seen = clipboard_look().map(|c| c.0);
+            crate::platform::open_url(&google_images_url(&g.words, 0, false, false));
+        }
+        d
+    }
+    pub fn page_setup(app: &App) -> Self {
+        let d = &app.doc;
+        let paper = d.paper().unwrap_or((8.5, 11.0));
+        let option = match d.kind {
+            Kind::Envelope => crate::kinds::ENVELOPES.iter().position(|(_, w, h)| (w.max(*h) - d.width.max(d.height)).abs() < 0.02 && (w.min(*h) - d.width.min(d.height)).abs() < 0.02).unwrap_or(0),
+            _ => crate::kinds::sheet_presets(d.kind).iter().position(|p| Some(&p.layout) == d.sheet.as_ref()).unwrap_or(0),
+        };
+        Dialog::PageSetup(Box::new(PageSetupState {
+            paper: crate::kinds::paper_index(paper).unwrap_or(crate::kinds::PAPERS.len()),
+            custom: (paper.0.min(paper.1), paper.0.max(paper.1)),
+            landscape: d.width > d.height,
+            fit: true,
+            option,
+            sheets: d.banner.as_ref().map(|b| b.sheets).unwrap_or(4),
+            tall: d.banner.as_ref().is_some_and(|b| b.tall),
         }))
     }
     pub fn headline(_edit: Option<u64>, app: &App) -> Self {
@@ -240,20 +280,7 @@ impl Dialog {
         Dialog::Effects { which, amount: fx::SHADOW_START_DISTANCE, angle: fx::SHADOW_START_ANGLE, size, color, style: fx::FrameStyle::Thin as u8 }
     }
     pub fn photo(item: u64, asset: u64, tab: u8, _app: &App, _ctx: &egui::Context) -> Self {
-        Dialog::Photo(Box::new(PhotoState {
-            item,
-            asset,
-            tab,
-            adjust: Adjust::default(),
-            preview: None,
-            previewed: None,
-            tool: 0,
-            how: crate::photo::Combine::New,
-            tolerance: 18.0,
-            soft: 1.0,
-            lasso: Vec::new(),
-            work: None,
-        }))
+        Dialog::Photo(Box::new(PhotoState::new(item, asset, tab)))
     }
     pub fn preview(app: &App, ctx: &egui::Context) -> Self {
         let sheets = crate::export::sheets(&app.doc);
@@ -448,16 +475,17 @@ fn show(ctx: &egui::Context, app: &mut App, d: &mut Dialog, acts: &mut Vec<Act>)
                 }
             });
         }
-        Dialog::NewProject { kind, landscape, option, sheets, tall } => {
+        Dialog::NewProject { kind, landscape, option, sheets, tall, design, cal } => {
             let mut create = false;
-            window("New Project").open(&mut open).default_size([680.0, 640.0]).show(ctx, |ui| {
+            window("New Project").open(&mut open).default_size([900.0, 760.0]).show(ctx, |ui| {
+              egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.label(RichText::new("What would you like to make?").size(17.0));
                 ui.add_space(6.0);
                 egui::Grid::new("kinds").spacing([8.0, 8.0]).show(ui, |ui| {
                     for (i, k) in Kind::ALL.iter().enumerate() {
                         let [r, g, b] = k.tile_color();
                         let on = *kind == *k;
-                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(150.0, 112.0), egui::Sense::click());
+                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(134.0, 96.0), egui::Sense::click());
                         let v = ui.visuals();
                         ui.painter().rect_filled(rect, 10.0, if on { v.selection.bg_fill.gamma_multiply(0.35) } else if resp.hovered() { v.widgets.hovered.weak_bg_fill } else { v.widgets.inactive.weak_bg_fill });
                         if on {
@@ -471,11 +499,14 @@ fn show(ctx: &egui::Context, app: &mut App, d: &mut Dialog, acts: &mut Vec<Act>)
                         if resp.clicked() {
                             *kind = *k;
                             *landscape = k.default_landscape();
+                            *design = 0;
+                            // Paper kinds start on their usual paper; others on their first size.
+                            *option = Project::new(*k, *landscape).paper().and_then(crate::kinds::paper_index).unwrap_or(0);
                         }
                         if resp.double_clicked() {
                             create = true;
                         }
-                        if i % 4 == 3 {
+                        if i % 6 == 5 {
                             ui.end_row();
                         }
                     }
@@ -483,7 +514,15 @@ fn show(ctx: &egui::Context, app: &mut App, d: &mut Dialog, acts: &mut Vec<Act>)
                 ui.add_space(8.0);
                 // Size choices for kinds that come in standard sizes.
                 let presets = crate::kinds::sheet_presets(*kind);
-                if !presets.is_empty() {
+                if kind.paper_use().is_some() {
+                    let papers = crate::kinds::PAPERS;
+                    *option = (*option).min(papers.len() - 1);
+                    egui::ComboBox::from_label("Paper").width(260.0).selected_text(papers[*option].0).show_ui(ui, |ui| {
+                        for (i, p) in papers.iter().enumerate() {
+                            ui.selectable_value(option, i, p.0);
+                        }
+                    });
+                } else if !presets.is_empty() {
                     *option = (*option).min(presets.len() - 1);
                     egui::ComboBox::from_label("Sheet").width(380.0).selected_text(presets[*option].label).show_ui(ui, |ui| {
                         for (i, p) in presets.iter().enumerate() {
@@ -512,12 +551,41 @@ fn show(ctx: &egui::Context, app: &mut App, d: &mut Dialog, acts: &mut Vec<Act>)
                     ui.label("Orientation:");
                     ui.radio_value(landscape, false, "Tall");
                     ui.radio_value(landscape, true, "Wide");
-                    let (mut w, mut h) = kind.size();
-                    if *landscape != kind.default_landscape() {
-                        std::mem::swap(&mut w, &mut h);
-                    }
-                    ui.label(RichText::new(format!("{w} × {h} in")).weak());
+                    let (w, h) = if kind.paper_use().is_some() {
+                        let p = crate::kinds::PAPERS[(*option).min(crate::kinds::PAPERS.len() - 1)];
+                        crate::kinds::page_for_paper(*kind, (p.1, p.2), *landscape)
+                    } else {
+                        let (mut w, mut h) = kind.size();
+                        if *landscape != kind.default_landscape() {
+                            std::mem::swap(&mut w, &mut h);
+                        }
+                        (w, h)
+                    };
+                    ui.label(RichText::new(format!("{} × {} in", (w * 100.0).round() / 100.0, (h * 100.0).round() / 100.0)).weak());
                 });
+                ui.add_space(6.0);
+                if *kind == Kind::Calendar {
+                    ui.label(RichText::new("Your calendar").strong());
+                    calendar_options(ui, cal, *landscape);
+                } else {
+                    // Ready-made designs for this kind, or a blank page.
+                    let designs = crate::templates::for_kind(*kind);
+                    if !designs.is_empty() {
+                        ui.label(RichText::new("Start with").strong());
+                        egui::ScrollArea::horizontal().id_salt("designs").show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                if design_tile(ui, app, ctx, *design == 0, "Blank", None) {
+                                    *design = 0;
+                                }
+                                for (i, d) in designs.iter().enumerate() {
+                                    if design_tile(ui, app, ctx, *design == i + 1, d.name, Some(d)) {
+                                        *design = i + 1;
+                                    }
+                                }
+                            });
+                        });
+                    }
+                }
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if ui.add(egui::Button::new(RichText::new("Create").size(16.0)).min_size(egui::vec2(120.0, 32.0))).clicked() {
@@ -527,11 +595,15 @@ fn show(ctx: &egui::Context, app: &mut App, d: &mut Dialog, acts: &mut Vec<Act>)
                         close = true;
                     }
                 });
+              });
             });
             if create {
                 let mut p = Project::new(*kind, *landscape);
                 let presets = crate::kinds::sheet_presets(*kind);
-                if let Some(pr) = presets.get(*option) {
+                if kind.paper_use().is_some() {
+                    let paper = crate::kinds::PAPERS[(*option).min(crate::kinds::PAPERS.len() - 1)];
+                    (p.width, p.height) = crate::kinds::page_for_paper(*kind, (paper.1, paper.2), *landscape);
+                } else if let Some(pr) = presets.get(*option) {
                     p.width = pr.w;
                     p.height = pr.h;
                     p.sheet = Some(pr.layout.clone());
@@ -541,8 +613,133 @@ fn show(ctx: &egui::Context, app: &mut App, d: &mut Dialog, acts: &mut Vec<Act>)
                 } else if *kind == Kind::Banner {
                     p.set_banner(crate::model::BannerSetup { sheets: *sheets, tall: *tall });
                 }
+                if *kind == Kind::Calendar {
+                    let people = crate::calendar::birthdays(&app.settings.contacts);
+                    crate::calendar::fill(&mut p, cal, &people);
+                } else if *design > 0
+                    && let Some(d) = crate::templates::for_kind(*kind).get(*design - 1)
+                {
+                    // The design, sized to the paper and choices made here.
+                    let mut q = (d.build)();
+                    q.resize_pages(p.width, p.height, true);
+                    q.landscape = p.landscape;
+                    q.sheet = p.sheet.clone();
+                    q.banner = p.banner.clone();
+                    p = q;
+                }
                 app.open_tab(p, None, false);
                 close = true;
+            }
+        }
+        Dialog::CalendarMaker(cal) => {
+            let mut make = false;
+            let landscape = app.doc.width > app.doc.height;
+            window("Calendar Maker").open(&mut open).resizable(false).show(ctx, |ui| {
+                ui.label("Fills this calendar with months, one page each. It replaces what's on the pages now (Undo brings it back).");
+                ui.add_space(6.0);
+                calendar_options(ui, cal, landscape);
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    make = ui.add(egui::Button::new(RichText::new("Make the Calendar").size(15.0)).min_size(egui::vec2(170.0, 30.0))).clicked();
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                });
+            });
+            if make {
+                app.checkpoint();
+                let people = crate::calendar::birthdays(&app.settings.contacts);
+                crate::calendar::fill(&mut app.doc, cal, &people);
+                app.panel = 0;
+                app.selected.clear();
+                app.fit_pending = true;
+                close = true;
+            }
+        }
+        Dialog::Ornaments => {
+            let mut pick: Option<u8> = None;
+            window("Flourishes & Dividers").open(&mut open).default_size([560.0, 520.0]).show(ctx, |ui| {
+                ui.label("Click one to add it to the page. Change its colors with the Line and Fill buttons, and its thickness with Line.");
+                ui.add_space(6.0);
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    egui::Grid::new("ornaments").spacing([8.0, 8.0]).show(ui, |ui| {
+                        for (i, name) in crate::raster::ORNAMENT_NAMES.iter().enumerate() {
+                            let key = format!("ornament-{i}");
+                            if !app.design_thumbs.contains_key(&key) {
+                                let mut it = Item::new(0, Frame::new(0.0, 0.0, 3.0, 0.7), Content::Ornament { style: i as u8 });
+                                it.stroke = Rgba::hex("#333333");
+                                it.fill = Rgba::hex("#c9a227");
+                                it.stroke_pt = 2.0;
+                                if let Some(r) = crate::raster::render_item(&it, &app.doc, &app.fonts, &app.pics, 50.0) {
+                                    let rgba = crate::raster::pixmap_to_rgba(&r.pixmap);
+                                    let tex = ctx.load_texture(&key, egui::ColorImage::from_rgba_unmultiplied([r.pixmap.width() as usize, r.pixmap.height() as usize], &rgba), egui::TextureOptions::LINEAR);
+                                    app.design_thumbs.insert(key.clone(), tex);
+                                }
+                            }
+                            let (r, resp) = ui.allocate_exact_size(egui::vec2(170.0, 74.0), egui::Sense::click());
+                            let v = ui.visuals();
+                            ui.painter().rect_filled(r, 8.0, if resp.hovered() { v.widgets.hovered.weak_bg_fill } else { Color32::WHITE });
+                            if let Some(t) = app.design_thumbs.get(&key) {
+                                let s = t.size_vec2();
+                                let k = ((r.width() - 12.0) / s.x).min((r.height() - 26.0) / s.y);
+                                ui.painter().image(t.id(), egui::Rect::from_center_size(r.center() - egui::vec2(0.0, 8.0), s * k), egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+                            }
+                            ui.painter().text(r.center_bottom() - egui::vec2(0.0, 4.0), egui::Align2::CENTER_BOTTOM, *name, egui::FontId::proportional(12.0), Color32::from_gray(60));
+                            if resp.clicked() {
+                                pick = Some(i as u8);
+                            }
+                            if i % 3 == 2 {
+                                ui.end_row();
+                            }
+                        }
+                    });
+                });
+            });
+            if let Some(style) = pick {
+                let w = (app.doc.width * 0.6).clamp(1.5, 6.0);
+                let h = if style == 11 { w * 0.22 } else { w * 0.16 };
+                let (stroke, fill) = (app.line_color, app.fill_color);
+                let id = app.add_item(w, h, Content::Ornament { style });
+                if let Some(it) = app.item_mut(id) {
+                    it.stroke = stroke;
+                    it.fill = fill;
+                    it.stroke_pt = 2.0;
+                }
+                close = true;
+            }
+        }
+        Dialog::ReplacePicture => {
+            let mut chosen = false;
+            window("Replace Picture").open(&mut open).resizable(false).show(ctx, |ui| {
+                ui.label("Where is the new picture? It goes in the same place and keeps any shadow, frame or other effects.");
+                ui.add_space(6.0);
+                let big = |ui: &mut egui::Ui, t: &str| ui.add(egui::Button::new(RichText::new(t).size(15.0)).min_size(egui::vec2(300.0, 34.0))).clicked();
+                if big(ui, "📁  A picture on this computer") {
+                    crate::platform::pick_file(crate::platform::Want::Picture, "Pictures", &["png", "jpg", "jpeg", "bmp", "gif", "wmf"], ctx);
+                    chosen = true;
+                }
+                if big(ui, "🔍  Google Images") {
+                    acts.push(Act::Gallery(1));
+                    chosen = true;
+                }
+                if big(ui, "⭐  My Art") {
+                    acts.push(Act::MyArt);
+                    chosen = true;
+                }
+                ui.label(RichText::new("You can also paste a picture now (Ctrl+V).").weak().size(12.0));
+                if ui.button("Cancel").clicked() {
+                    app.replace_target = None;
+                    close = true;
+                }
+            });
+            if chosen {
+                close = true;
+            }
+            if !open {
+                // Closed with ×: only call it off if nothing was picked.
+                if !chosen {
+                    app.replace_target = None;
+                }
             }
         }
         Dialog::Message { title, body } => {
@@ -582,8 +779,8 @@ fn show(ctx: &egui::Context, app: &mut App, d: &mut Dialog, acts: &mut Vec<Act>)
                     }
                 });
                 ui.horizontal(|ui| {
-                    ui.add_enabled(h.warp != Warp::Straight, egui::Slider::new(&mut h.bend, -4.0..=4.0).text("How much it bends"));
-                    ui.add(egui::Slider::new(&mut h.bulge, -2.0..=2.0).text("Bulge (mixes with any shape)"));
+                    ui.add_enabled_ui(h.warp != Warp::Straight, |ui| crate::widgets::slider(ui, &mut h.bend, -4.0..=4.0, |s| s.text("How much it bends")));
+                    crate::widgets::slider(ui, &mut h.bulge, -2.0..=2.0, |s| s.text("Bulge (mixes with any shape)"));
                     ui.checkbox(&mut h.stretch, "Stretch letters to fill the box");
                 });
                 ui.label("Effect:");
@@ -643,7 +840,10 @@ fn show(ctx: &egui::Context, app: &mut App, d: &mut Dialog, acts: &mut Vec<Act>)
             }
         }
         Dialog::Gallery(g) => gallery(ctx, app, g, &mut open, &mut close),
-        Dialog::Photo(p) => photo(ctx, app, p, &mut open, &mut close),
+        Dialog::Photo(p) => crate::photo_editor::show(ctx, app, p, &mut open, &mut close),
+        Dialog::PageSetup(ps) => page_setup(ctx, app, ps, &mut open, &mut close),
+        Dialog::Update(u) => crate::update::window(ctx, app, u, &mut open, &mut close),
+        Dialog::Report(r) => crate::report::window(ctx, app, r, &mut open, &mut close),
         Dialog::Effects { which, amount, angle, size, color, style } => {
             let title = ["Apply Drop Shadow", "Apply Glow", "Apply Frame"][*which as usize];
             let mut apply = None;
@@ -652,18 +852,18 @@ fn show(ctx: &egui::Context, app: &mut App, d: &mut Dialog, acts: &mut Vec<Act>)
                 let mut live = false;
                 match which {
                     0 => {
-                        live |= ui.add(egui::Slider::new(amount, 0.0..=1.0).text("Distance").show_value(false)).changed();
-                        live |= ui.add(egui::Slider::new(angle, 0.0..=360.0).text("Direction").suffix("°")).changed();
-                        live |= ui.add(egui::Slider::new(size, 0.0..=1.0).text("Softness").show_value(false)).changed();
+                        live |= crate::widgets::slider(ui, amount, 0.0..=1.0, |s| s.text("Distance").show_value(false)).changed();
+                        live |= crate::widgets::slider(ui, angle, 0.0..=360.0, |s| s.text("Direction").suffix("°")).changed();
+                        live |= crate::widgets::slider(ui, size, 0.0..=1.0, |s| s.text("Softness").show_value(false)).changed();
                         live |= color_row(ui, &mut app.settings, &mut app.eyedropper, "Shadow color", color);
                         let mut a = color.3 as f32 / 255.0;
-                        if ui.add(egui::Slider::new(&mut a, 0.1..=1.0).text("Darkness")).changed() {
+                        if crate::widgets::slider(ui, &mut a, 0.1..=1.0, |s| s.text("Darkness")).changed() {
                             color.3 = (a * 255.0) as u8;
                             live = true;
                         }
                     }
                     1 => {
-                        live |= ui.add(egui::Slider::new(size, 0.0..=1.0).text("Size").show_value(false)).changed();
+                        live |= crate::widgets::slider(ui, size, 0.0..=1.0, |s| s.text("Size").show_value(false)).changed();
                         live |= color_row(ui, &mut app.settings, &mut app.eyedropper, "Glow color", color);
                     }
                     _ => {
@@ -797,13 +997,23 @@ fn show(ctx: &egui::Context, app: &mut App, d: &mut Dialog, acts: &mut Vec<Act>)
                     app.checkpoint();
                     app.page_mut().pattern_color = pc;
                 }
+                // Finer or bigger stripes, dots, grids…
+                let mut sc = app.page().pattern_scale;
+                let r = crate::widgets::slider(ui, &mut sc, 0.25..=4.0, |s| s.text("Pattern size").logarithmic(true).suffix("×").fixed_decimals(2));
+                if r.drag_started() || (r.changed() && !r.dragged()) {
+                    app.checkpoint();
+                }
+                if r.changed() {
+                    app.page_mut().pattern_scale = sc;
+                }
                 if ui.button("Use on every page").clicked() {
                     app.checkpoint();
-                    let (bg, pat, col) = (app.page().background, app.page().pattern, app.page().pattern_color);
+                    let (bg, pat, col, scale) = (app.page().background, app.page().pattern, app.page().pattern_color, app.page().pattern_scale);
                     for p in app.doc.panels.iter_mut() {
                         p.background = bg;
                         p.pattern = pat;
                         p.pattern_color = col;
+                        p.pattern_scale = scale;
                     }
                 }
                 ui.separator();
@@ -840,7 +1050,7 @@ fn show(ctx: &egui::Context, app: &mut App, d: &mut Dialog, acts: &mut Vec<Act>)
                 if matches!(app.doc.kind, Kind::CardHalf | Kind::NoteCard) {
                     ui.label(RichText::new("After the first sheet prints, put it back in the printer blank side up for the inside.").weak());
                 }
-                ui.add(egui::Slider::new(copies, 1..=50).text("Copies"));
+                crate::widgets::slider(ui, copies, 1..=50, |s| s.text("Copies"));
                 ui.horizontal(|ui| {
                     if ui.add(egui::Button::new("Print").min_size(egui::vec2(90.0, 28.0))).clicked() {
                         go = true;
@@ -929,17 +1139,43 @@ fn show(ctx: &egui::Context, app: &mut App, d: &mut Dialog, acts: &mut Vec<Act>)
         }
         Dialog::AddressPick => {
             let mut pick = None;
-            window("Insert an Address").open(&mut open).resizable(false).show(ctx, |ui| {
+            let mut field: Option<&str> = None;
+            window("Insert an Address").open(&mut open).resizable(false).default_width(420.0).show(ctx, |ui| {
+                ui.label(RichText::new("For everyone in the address book").strong());
+                ui.label(RichText::new("Put in a merge field. When you print, choose the people and PrintCraft makes one for each: a label each, or an envelope each.").weak().size(12.0));
+                ui.horizontal_wrapped(|ui| {
+                    for (f, tip) in crate::merge::FIELDS {
+                        if ui.button(f).on_hover_text(tip).clicked() {
+                            field = Some(f);
+                        }
+                    }
+                });
+                ui.add_space(8.0);
+                ui.label(RichText::new("One person's address").strong());
+                if app.settings.contacts.is_empty() {
+                    ui.label(RichText::new("Your address book is empty.").weak());
+                    if ui.button("Open the Address Book").clicked() {
+                        acts.push(Act::AddressBook);
+                    }
+                }
                 for (i, c) in app.settings.contacts.iter().enumerate() {
                     if ui.button(if c.name.is_empty() { "(no name)" } else { &c.name }).clicked() {
                         pick = Some(i);
                     }
                 }
             });
-            if let Some(i) = pick {
-                let block = app.settings.contacts[i].mailing_block();
+            let text = pick.map(|i| app.settings.contacts[i].mailing_block()).or(field.map(str::to_string));
+            if let Some(text) = text {
                 let look = TextLook { size: 14.0, ..Default::default() };
-                app.add_item(3.2, 1.0, Content::Text { text: block, look, shape: None, fit: false, runs: Vec::new() });
+                let editing = app.editing.is_some();
+                if editing {
+                    // Typing in a text box: the field goes where the words are.
+                    if let Some((_, buf)) = app.editing.as_mut() {
+                        buf.push_str(&text);
+                    }
+                } else {
+                    app.add_item(3.2, 1.0, Content::Text { text, look, shape: None, fit: false, runs: Vec::new() });
+                }
                 close = true;
             }
         }
@@ -1062,9 +1298,11 @@ fn gallery(ctx: &egui::Context, app: &mut App, g: &mut GalleryState, open: &mut 
     const PER_PAGE: usize = 48;
     window("Pictures").open(open).default_size([900.0, 620.0]).show(ctx, |ui| {
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut g.tab, 0, RichText::new("My Content Packs").size(15.0));
             ui.selectable_value(&mut g.tab, 1, RichText::new("Google Images").size(15.0));
             ui.selectable_value(&mut g.tab, 2, RichText::new("My Art").size(15.0));
+            if !crate::platform::WEB {
+                ui.selectable_value(&mut g.tab, 0, RichText::new("Content Packs").size(15.0));
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if g.tab != 2 {
                     ui.checkbox(&mut g.keep, "Also keep a copy in My Art");
@@ -1127,13 +1365,25 @@ fn gallery(ctx: &egui::Context, app: &mut App, g: &mut GalleryState, open: &mut 
                 ui.checkbox(&mut g.web_clear, "See-through background");
                 ui.checkbox(&mut g.web_free, "Free to reuse (open licenses)");
                 ui.add_space(8.0);
-                let search = ui.add(egui::Button::new(RichText::new("🔍  Search Google Images").size(15.0)).min_size(egui::vec2(200.0, 34.0))).on_hover_text("Opens Google Images in your web browser");
+                let search = ui.add(egui::Button::new(RichText::new("🔍  Search Google Images").size(15.0)).min_size(egui::vec2(200.0, 34.0))).on_hover_text("Opens Google Images; pictures you pick go straight onto your page");
                 let url = google_images_url(&g.words, g.web_kind, g.web_free, g.web_clear);
                 if go || search.clicked() {
                     app.online.web_words = g.words.clone();
                     app.online.web_keep = g.keep;
-                    match app.online.google_window(&url, ctx) {
-                        Ok(()) => g.in_browser = false,
+                    if crate::platform::WEB {
+                        // In the browser version a pasted or dropped picture goes
+                        // straight onto the page, so this window isn't needed.
+                        crate::platform::open_url(&url);
+                        app.web_search_hint(ctx);
+                        *close = true;
+                    } else {
+                        match app.online.google_window(&url, ctx) {
+                        Ok(()) => {
+                            // Picks go straight onto the page; this window has done its job.
+                            g.in_browser = false;
+                            app.google_window_hint(ctx);
+                            *close = true;
+                        }
                         Err(e) => {
                             // No web engine here: use the web browser instead.
                             app.notify(format!("{e} Opening your web browser instead."), ctx);
@@ -1143,10 +1393,11 @@ fn gallery(ctx: &egui::Context, app: &mut App, g: &mut GalleryState, open: &mut 
                             g.clip_pic = None;
                             g.clip_url = None;
                         }
+                        }
                     }
                 }
                 ui.add_space(4.0);
-                if ui.link("Use my web browser instead").on_hover_text("Opens Google Images in your usual web browser; copy a picture there and it shows up here").clicked() {
+                if !crate::platform::WEB && ui.link("Use my web browser instead").on_hover_text("Opens Google Images in your usual web browser; copy a picture there and it shows up here").clicked() {
                     g.in_browser = true;
                     crate::ai::open_in_browser(&url);
                     g.clip_seen = clipboard_look().map(|c| c.0);
@@ -1287,7 +1538,13 @@ fn google_tab(ctx: &egui::Context, ui: &mut egui::Ui, app: &mut App, g: &mut Gal
     ui.add_space(10.0);
     ui.label(RichText::new("Find a picture with Google Images").size(20.0).color(strong));
     ui.add_space(10.0);
-    let steps: [&str; 3] = if g.in_browser {
+    let steps: [&str; 3] = if crate::platform::WEB {
+        [
+            "Type what you're looking for on the left, then click Search Google Images. Google opens in a new browser tab.",
+            "Right-click a picture you like and choose Copy Image.",
+            "Come back to PrintCraft and press Ctrl+V (⌘V on a Mac): the picture goes onto your page. You can also drag a picture from the Google tab onto your page.",
+        ]
+    } else if g.in_browser {
         [
             "Google Images is open in your web browser.",
             "Right-click a picture you like and choose Copy Image.",
@@ -1393,253 +1650,213 @@ fn tile(ui: &mut egui::Ui, tex: Option<&TextureHandle>, title: &str) -> egui::Re
     resp.on_hover_text(title)
 }
 
-const WORK_SIDE: u32 = 700;
-
-fn photo(ctx: &egui::Context, app: &mut App, p: &mut PhotoState, open: &mut bool, close: &mut bool) {
-    use crate::photo::Combine;
-    let tabs = ["Crop & Turn", "Color & Recolor", "Brightness & Focus", "Red Eye", "Photo Effects", "Cut Out"];
-    let mut done = false;
-    // The cropped, turned picture the selection tools work on.
-    let key = (p.adjust.crop, p.adjust.turns);
-    if p.work.as_ref().is_none_or(|(k, _)| *k != key) {
-        if p.work.is_some() {
-            // The picture changed shape; an old selection no longer fits.
-            p.adjust.mask = None;
-            p.lasso.clear();
-        }
-        p.work = app.doc.assets.get(&p.asset).and_then(|a| crate::photo::geometry(&a.bytes, &p.adjust, WORK_SIDE)).map(|w| (key, w));
-    }
-    let mut picked: Option<(u32, u32, bool)> = None; // pixel and "double click"
-    window("Photo Editor").open(open).default_size([900.0, 620.0]).show(ctx, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            for (i, t) in tabs.iter().enumerate() {
-                ui.selectable_value(&mut p.tab, i as u8, *t);
-            }
-        });
-        ui.separator();
-        egui::Panel::left("photo-tools").exact_size(280.0).resizable(false).show(ui, |ui| {
-            let a = &mut p.adjust;
-            match p.tab {
-                0 => {
-                    ui.label("Trim the edges:");
-                    for (i, l) in ["Left", "Top", "Right", "Bottom"].iter().enumerate() {
-                        ui.add(egui::Slider::new(&mut a.crop[i], 0.0..=0.45).text(*l).show_value(false));
-                    }
-                    if ui.button("⟳ Rotate 90 Degrees").clicked() {
-                        a.turns = (a.turns + 1) % 4;
-                    }
-                }
-                1 => {
-                    ui.label(RichText::new("Adjust color").strong());
-                    ui.add(egui::Slider::new(&mut a.saturation, -1.0..=1.0).text("Color strength"));
-                    ui.add(egui::Slider::new(&mut a.warmth, -1.0..=1.0).text("Cool ↔ Warm"));
-                    ui.add_space(8.0);
-                    ui.label(RichText::new("Recolor").strong());
-                    ui.label(RichText::new("Turn every color around the color wheel: red becomes orange, then yellow, green, blue...").weak().size(12.0));
-                    ui.add(egui::Slider::new(&mut a.hue, -180.0..=180.0).text("Shift colors").suffix("°"));
-                    for (k, n) in ["More red", "More green", "More blue"].iter().enumerate() {
-                        ui.add(egui::Slider::new(&mut a.rgb[k], -1.0..=1.0).text(*n).show_value(false));
-                    }
-                    ui.horizontal_wrapped(|ui| {
-                        for (n, h) in [("Warmer", 20.0), ("Cooler", -20.0), ("Opposite", 180.0)] {
-                            if ui.button(n).clicked() {
-                                a.hue = h;
-                            }
-                        }
-                    });
-                }
-                2 => {
-                    ui.add(egui::Slider::new(&mut a.brightness, -100..=100).text("Brightness"));
-                    ui.add(egui::Slider::new(&mut a.contrast, -50.0..=50.0).text("Contrast"));
-                    ui.add(egui::Slider::new(&mut a.sharpen, 0.0..=1.0).text("Sharpen"));
-                }
-                3 => {
-                    ui.checkbox(&mut a.red_eye, "Remove red eye");
-                }
-                4 => {
-                    for e in Effect::ALL {
-                        ui.radio_value(&mut a.effect, e, e.label());
-                    }
-                }
-                _ => {
-                    ui.label(RichText::new("How to cut out").strong());
-                    let tools = ["A shape", "Draw my own outline", "Magic wand", "Pick a color", "Remove background"];
-                    for (k, t) in tools.iter().enumerate() {
-                        ui.radio_value(&mut p.tool, k as u8, *t);
-                    }
-                    ui.separator();
-                    match p.tool {
-                        0 => {
-                            ui.radio_value(&mut a.shape, None, "No shape (rectangle)");
-                            for o in [Outline::Ellipse, Outline::Rounded, Outline::Heart, Outline::Star, Outline::Diamond, Outline::Hexagon, Outline::Cloud, Outline::Burst] {
-                                ui.radio_value(&mut a.shape, Some(o), o.label());
-                            }
-                        }
-                        4 => {
-                            ui.label(RichText::new("PrintCraft looks at the edges of the photo and removes the background color that touches them.").weak().size(12.0));
-                            ui.add(egui::Slider::new(&mut p.tolerance, 2.0..=60.0).text("How much to remove"));
-                            if ui.add(egui::Button::new("✨ Remove Background").min_size(egui::vec2(180.0, 30.0))).clicked()
-                                && let Some((_, w)) = &p.work
-                            {
-                                let keep = crate::photo::remove_background(w, p.tolerance);
-                                let m = crate::photo::combine(None, w.width(), w.height(), &keep, Combine::New);
-                                a.mask = Some(std::sync::Arc::new(crate::photo::feather(&m, p.soft as u32)));
-                            }
-                        }
-                        _ => {
-                            ui.label(RichText::new(match p.tool {
-                                1 => "Click around what you want to keep, point by point. Double-click (or click the first point) to finish.",
-                                2 => "Click an area; the magic wand selects the touching area of similar color.",
-                                _ => "Click a color; every part of the photo in that color is selected.",
-                            }).weak().size(12.0));
-                            ui.horizontal(|ui| {
-                                ui.selectable_value(&mut p.how, Combine::New, "New");
-                                ui.selectable_value(&mut p.how, Combine::Add, "Add");
-                                ui.selectable_value(&mut p.how, Combine::Subtract, "Subtract");
-                            });
-                            if p.tool != 1 {
-                                ui.add(egui::Slider::new(&mut p.tolerance, 2.0..=60.0).text("How similar"));
-                            }
-                        }
-                    }
-                    if p.tool != 0 {
-                        ui.add(egui::Slider::new(&mut p.soft, 0.0..=8.0).text("Soft edges"));
-                        ui.horizontal(|ui| {
-                            if ui.button("Keep the opposite").on_hover_text("Swap what's kept and what's removed").clicked()
-                                && let Some(m) = &a.mask
-                            {
-                                let mut n = (**m).clone();
-                                for v in n.data.iter_mut() {
-                                    *v = 255 - *v;
-                                }
-                                a.mask = Some(std::sync::Arc::new(n));
-                            }
-                            if ui.button("Clear").clicked() {
-                                a.mask = None;
-                                p.lasso.clear();
-                            }
-                        });
-                    }
-                }
-            }
-            ui.add_space(10.0);
-            if ui.button("Undo All").clicked() {
-                *a = Adjust::default();
-                p.lasso.clear();
-            }
-        });
-        egui::CentralPanel::default().show(ui, |ui| {
-            if p.previewed.as_ref() != Some(&p.adjust) {
-                if let Some(asset) = app.doc.assets.get(&p.asset)
-                    && let Some(img) = crate::photo::apply(&asset.bytes, &p.adjust, WORK_SIDE)
-                {
-                    let rgba = img.to_rgba8();
-                    let ci = egui::ColorImage::from_rgba_unmultiplied([rgba.width() as usize, rgba.height() as usize], rgba.as_raw());
-                    p.preview = Some(ctx.load_texture("photo-preview", ci, egui::TextureOptions::LINEAR));
-                }
-                p.previewed = Some(p.adjust.clone());
-            }
-            if let Some(t) = &p.preview {
-                let avail = ui.available_size() - egui::vec2(16.0, 56.0);
-                let s = t.size_vec2();
-                let k = (avail.x / s.x).min(avail.y / s.y).max(0.05);
-                let (r, resp) = ui.allocate_exact_size(s * k, egui::Sense::click());
-                // Checkerboard shows what's been cut away.
-                let cell = 10.0;
-                let (mut y, mut row) = (r.top(), 0);
-                while y < r.bottom() {
-                    let (mut x, mut col) = (r.left(), 0);
-                    while x < r.right() {
-                        let c = if (row + col) % 2 == 0 { Color32::from_gray(225) } else { Color32::from_gray(250) };
-                        ui.painter().rect_filled(egui::Rect::from_min_max(egui::pos2(x, y), egui::pos2((x + cell).min(r.right()), (y + cell).min(r.bottom()))), 0.0, c);
-                        x += cell;
-                        col += 1;
-                    }
-                    y += cell;
-                    row += 1;
-                }
-                ui.painter().image(t.id(), r, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
-                if p.tab == 5 && (1..=3).contains(&p.tool) {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
-                    if let Some(pos) = resp.interact_pointer_pos()
-                        && (resp.clicked() || resp.double_clicked())
-                        && let Some((_, w)) = &p.work
-                    {
-                        let px = ((pos.x - r.left()) / r.width() * w.width() as f32).clamp(0.0, w.width() as f32 - 1.0);
-                        let py = ((pos.y - r.top()) / r.height() * w.height() as f32).clamp(0.0, w.height() as f32 - 1.0);
-                        picked = Some((px as u32, py as u32, resp.double_clicked()));
-                    }
-                    // Outline being drawn.
-                    if p.tool == 1 && !p.lasso.is_empty()
-                        && let Some((_, w)) = &p.work
-                    {
-                        let to_screen = |q: (f32, f32)| egui::pos2(r.left() + q.0 / w.width() as f32 * r.width(), r.top() + q.1 / w.height() as f32 * r.height());
-                        let mut pts: Vec<egui::Pos2> = p.lasso.iter().map(|q| to_screen(*q)).collect();
-                        if let Some(h) = resp.hover_pos() {
-                            pts.push(h);
-                        }
-                        ui.painter().add(egui::Shape::line(pts.clone(), egui::Stroke::new(3.0, Color32::WHITE)));
-                        ui.painter().add(egui::Shape::line(pts, egui::Stroke::new(1.5, Color32::from_rgb(222, 64, 160))));
-                        ui.painter().circle(to_screen(p.lasso[0]), 6.0, Color32::from_rgb(222, 64, 160), egui::Stroke::new(1.5, Color32::WHITE));
-                    }
-                }
-            }
-            ui.horizontal(|ui| {
-                if ui.add(egui::Button::new("OK").min_size(egui::vec2(90.0, 28.0))).clicked() {
-                    done = true;
-                }
-                if ui.button("Cancel").clicked() {
-                    *close = true;
+/// The calendar maker's choices (New Project and Tools > Calendar Maker).
+fn calendar_options(ui: &mut egui::Ui, cal: &mut crate::calendar::CalendarOptions, landscape: bool) {
+    use crate::calendar::{MONTHS, SCHEMES};
+    egui::Grid::new("calendar-options").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+        ui.label("Starting with:");
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("cal-month").width(120.0).selected_text(MONTHS[cal.month as usize - 1]).show_ui(ui, |ui| {
+                for (i, m) in MONTHS.iter().enumerate() {
+                    ui.selectable_value(&mut cal.month, i as u32 + 1, *m);
                 }
             });
+            crate::widgets::number(ui, &mut cal.year, 1900..=2200, 1.0, |d| d.speed(0.2));
         });
-    });
-    // Apply a click from the selection tools.
-    if let Some((x, y, double)) = picked
-        && let Some((_, w)) = &p.work
-    {
-        let (ww, wh) = (w.width(), w.height());
-        let sel = match p.tool {
-            1 => {
-                let first = p.lasso.first().copied();
-                let near_first = first.is_some_and(|f| ((f.0 - x as f32).powi(2) + (f.1 - y as f32).powi(2)).sqrt() < ww.max(wh) as f32 * 0.02);
-                if (double || near_first) && p.lasso.len() >= 3 {
-                    let s = crate::photo::lasso(ww, wh, &p.lasso);
-                    p.lasso.clear();
-                    Some(s)
-                } else {
-                    p.lasso.push((x as f32, y as f32));
-                    None
+        ui.end_row();
+        ui.label("How many months:");
+        crate::widgets::stepper(ui, &mut cal.months, 1, 12, "");
+        ui.end_row();
+        ui.label("Weeks start on:");
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut cal.monday_first, false, "Sunday");
+            ui.radio_value(&mut cal.monday_first, true, "Monday");
+        });
+        ui.end_row();
+        ui.label("Colors:");
+        ui.horizontal_wrapped(|ui| {
+            for (i, s) in SCHEMES.iter().enumerate() {
+                let fill = Color32::from_rgb(u8::from_str_radix(&s.2[1..3], 16).unwrap_or(0), u8::from_str_radix(&s.2[3..5], 16).unwrap_or(0), u8::from_str_radix(&s.2[5..7], 16).unwrap_or(0));
+                let ink = Color32::from_rgb(u8::from_str_radix(&s.3[1..3], 16).unwrap_or(255), u8::from_str_radix(&s.3[3..5], 16).unwrap_or(255), u8::from_str_radix(&s.3[5..7], 16).unwrap_or(255));
+                let b = egui::Button::new(RichText::new(s.0).color(ink)).fill(fill).selected(cal.scheme == i);
+                if ui.add(b).clicked() {
+                    cal.scheme = i;
                 }
             }
-            2 => Some(crate::photo::wand(w, x, y, p.tolerance)),
-            _ => Some(crate::photo::color_select(w, w.get_pixel(x, y).0, p.tolerance)),
-        };
-        if let Some(sel) = sel {
-            let m = crate::photo::combine(p.adjust.mask.as_deref(), ww, wh, &sel, p.how);
-            p.adjust.mask = Some(std::sync::Arc::new(crate::photo::feather(&m, p.soft as u32)));
-            if p.how == Combine::New {
-                p.how = Combine::Add;
+        });
+        ui.end_row();
+    });
+    ui.checkbox(&mut cal.holidays, "Show holidays (US)");
+    ui.checkbox(&mut cal.birthdays, "Show birthdays from my address book");
+    if !landscape {
+        ui.checkbox(&mut cal.picture_space, "Leave room for a photo above each month");
+    } else {
+        ui.label(RichText::new("Tip: choose Tall for room for a photo above each month.").weak().size(12.0));
+    }
+}
+
+/// A ready-made design (or Blank) as a little picture to click.
+fn design_tile(ui: &mut egui::Ui, app: &mut App, ctx: &egui::Context, on: bool, name: &str, d: Option<&crate::templates::Design>) -> bool {
+    let (r, resp) = ui.allocate_exact_size(egui::vec2(150.0, 168.0), egui::Sense::click());
+    let v = ui.visuals().clone();
+    ui.painter().rect_filled(r, 10.0, if on { v.selection.bg_fill.gamma_multiply(0.3) } else if resp.hovered() { v.widgets.hovered.weak_bg_fill } else { v.widgets.inactive.weak_bg_fill });
+    if on {
+        ui.painter().rect_stroke(r, 10.0, egui::Stroke::new(2.0, v.selection.bg_fill), egui::StrokeKind::Inside);
+    }
+    let pic = egui::Rect::from_min_max(r.min + egui::vec2(8.0, 8.0), egui::pos2(r.right() - 8.0, r.bottom() - 36.0));
+    match d {
+        Some(d) => {
+            if !app.design_thumbs.contains_key(d.name) {
+                let p = (d.build)();
+                let ppi = 130.0 / p.width.max(p.height);
+                if let Some(pm) = crate::raster::render_panel(&p, 0, &app.fonts, &app.pics, ppi) {
+                    let rgba = crate::raster::pixmap_to_rgba(&pm);
+                    let tex = ctx.load_texture(format!("design-{}", d.name), egui::ColorImage::from_rgba_unmultiplied([pm.width() as usize, pm.height() as usize], &rgba), egui::TextureOptions::LINEAR);
+                    app.design_thumbs.insert(d.name.to_string(), tex);
+                }
+            }
+            if let Some(t) = app.design_thumbs.get(d.name) {
+                let k = (pic.width() / t.size_vec2().x).min(pic.height() / t.size_vec2().y);
+                let img = egui::Rect::from_center_size(pic.center(), t.size_vec2() * k);
+                ui.painter().rect_filled(img.expand(1.0), 2.0, Color32::from_gray(200));
+                ui.painter().image(t.id(), img, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
             }
         }
+        None => {
+            let img = egui::Rect::from_center_size(pic.center(), egui::vec2(pic.width() * 0.6, pic.height() * 0.8));
+            ui.painter().rect_filled(img, 2.0, Color32::WHITE);
+            ui.painter().rect_stroke(img, 2.0, egui::Stroke::new(1.0, Color32::from_gray(180)), egui::StrokeKind::Inside);
+            ui.painter().text(img.center(), egui::Align2::CENTER_CENTER, "+", egui::FontId::proportional(30.0), Color32::from_gray(170));
+        }
     }
-    if done {
-        if p.adjust != Adjust::default()
-            && let Some(asset) = app.doc.assets.get(&p.asset).cloned()
-            && let Some(img) = crate::photo::apply(&asset.bytes, &p.adjust, 3000)
-        {
-            let (w, h) = (img.width() as f32, img.height() as f32);
-            let png = crate::photo::to_png(&img);
+    let label = egui::WidgetText::from(RichText::new(name).size(12.5)).into_galley(ui, Some(egui::TextWrapMode::Wrap), r.width() - 12.0, egui::TextStyle::Body);
+    ui.painter().galley(egui::pos2(r.center().x - label.size().x / 2.0, r.bottom() - 32.0), label, v.text_color());
+    resp.on_hover_text(name).clicked()
+}
+
+/// Page Setup: paper size and direction for kinds made from a sheet of
+/// paper; the sheet, envelope or banner length for the others.
+fn page_setup(ctx: &egui::Context, app: &mut App, s: &mut PageSetupState, open: &mut bool, close: &mut bool) {
+    use crate::kinds::{PAPERS, page_for_paper};
+    let kind = app.doc.kind;
+    let mut ok = false;
+    window("Page Setup").open(open).default_size([520.0, 420.0]).show(ctx, |ui| {
+        ui.label(RichText::new(format!("{} — page size", kind.label())).size(16.0));
+        ui.add_space(6.0);
+        let mut page = (app.doc.width, app.doc.height);
+        if kind.paper_use().is_some() {
+            egui::Grid::new("paper").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
+                ui.label("Paper:");
+                let name = PAPERS.get(s.paper).map(|p| p.0).unwrap_or("Custom size");
+                egui::ComboBox::from_id_salt("paper-size").width(260.0).selected_text(name).show_ui(ui, |ui| {
+                    for (i, p) in PAPERS.iter().enumerate() {
+                        ui.selectable_value(&mut s.paper, i, p.0);
+                    }
+                    ui.selectable_value(&mut s.paper, PAPERS.len(), "Custom size");
+                });
+                ui.end_row();
+                if s.paper >= PAPERS.len() {
+                    ui.label("Size:");
+                    ui.horizontal(|ui| {
+                        crate::widgets::number(ui, &mut s.custom.0, 2.0..=24.0, 0.25, |d| d.speed(0.05).suffix(" in"));
+                        ui.label("×");
+                        crate::widgets::number(ui, &mut s.custom.1, 2.0..=48.0, 0.25, |d| d.speed(0.05).suffix(" in"));
+                    });
+                    ui.end_row();
+                }
+                ui.label("Direction:");
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut s.landscape, false, "Tall");
+                    ui.radio_value(&mut s.landscape, true, "Wide");
+                });
+                ui.end_row();
+            });
+            let paper = PAPERS.get(s.paper).map(|p| (p.1, p.2)).unwrap_or(s.custom);
+            page = page_for_paper(kind, paper, s.landscape);
+            if kind.paper_use() != Some(crate::kinds::PaperUse::Whole) {
+                ui.label(RichText::new(format!("Each panel of the card: {:.2} × {:.2} in (the paper is folded).", page.0, page.1)).weak().size(12.0));
+            }
+        } else if kind == Kind::Envelope {
+            let list = crate::kinds::ENVELOPES;
+            s.option = s.option.min(list.len() - 1);
+            egui::ComboBox::from_label("Envelope size").width(300.0).selected_text(list[s.option].0).show_ui(ui, |ui| {
+                for (i, e) in list.iter().enumerate() {
+                    ui.selectable_value(&mut s.option, i, e.0);
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut s.landscape, true, "Wide (address side)");
+                ui.radio_value(&mut s.landscape, false, "Tall");
+            });
+            let (_, w, h) = list[s.option];
+            page = if s.landscape { (w.max(h), w.min(h)) } else { (w.min(h), w.max(h)) };
+        } else if kind == Kind::Banner {
+            crate::widgets::stepper(ui, &mut s.sheets, 1, 20, "Sheets of paper:");
+            ui.horizontal(|ui| {
+                ui.label("Each sheet:");
+                ui.radio_value(&mut s.tall, false, "Sideways (banner 8½ in tall)");
+                ui.radio_value(&mut s.tall, true, "Upright (banner 11 in tall)");
+            });
+            let b = crate::model::BannerSetup { sheets: s.sheets, tall: s.tall };
+            let (seg, h) = Project::banner_segment(&b, crate::model::BANNER_MARGIN);
+            page = (seg * s.sheets as f32, h);
+        } else {
+            let presets = crate::kinds::sheet_presets(kind);
+            if !presets.is_empty() {
+                s.option = s.option.min(presets.len() - 1);
+                egui::ComboBox::from_label("Sheet").width(380.0).selected_text(presets[s.option].label).show_ui(ui, |ui| {
+                    for (i, p) in presets.iter().enumerate() {
+                        ui.selectable_value(&mut s.option, i, p.label);
+                    }
+                });
+                page = (presets[s.option].w, presets[s.option].h);
+            } else {
+                ui.label("This kind of project has one size.");
+            }
+        }
+        ui.add_space(8.0);
+        // A small picture of the new page next to the old one.
+        let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width().min(460.0), 140.0), egui::Sense::hover());
+        let scale = 100.0 / page.0.max(page.1).max(app.doc.width).max(app.doc.height);
+        let v = ui.visuals().clone();
+        let old = egui::Rect::from_min_size(r.left_top() + egui::vec2(10.0, 10.0), egui::vec2(app.doc.width, app.doc.height) * scale);
+        let new = egui::Rect::from_min_size(r.left_top() + egui::vec2(180.0, 10.0), egui::vec2(page.0, page.1) * scale);
+        ui.painter().rect_stroke(old, 2.0, egui::Stroke::new(1.0, v.weak_text_color()), egui::StrokeKind::Inside);
+        ui.painter().text(old.center_bottom() + egui::vec2(0.0, 4.0), egui::Align2::CENTER_TOP, format!("Now: {:.2} × {:.2} in", app.doc.width, app.doc.height), egui::FontId::proportional(12.0), v.weak_text_color());
+        ui.painter().rect_filled(new, 2.0, Color32::WHITE);
+        ui.painter().rect_stroke(new, 2.0, egui::Stroke::new(1.5, v.selection.bg_fill), egui::StrokeKind::Inside);
+        ui.painter().text(new.center_bottom() + egui::vec2(0.0, 4.0), egui::Align2::CENTER_TOP, format!("New: {:.2} × {:.2} in", page.0, page.1), egui::FontId::proportional(12.0), v.strong_text_color());
+        ui.add_space(4.0);
+        ui.checkbox(&mut s.fit, "Fit what's on the page to the new size");
+        ui.label(RichText::new("Everything is made larger or smaller together and centered; borders follow the edge of the page.").weak().size(12.0));
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui.add(egui::Button::new(RichText::new("OK").size(15.0)).min_size(egui::vec2(90.0, 30.0))).clicked() {
+                ok = true;
+            }
+            if ui.button("Cancel").clicked() {
+                *close = true;
+            }
+        });
+        if ok {
             app.checkpoint();
-            let new_id = app.doc.add_asset(&asset.name, png, &asset.credit);
-            if let Some(it) = app.item_mut(p.item) {
-                it.content = Content::Picture { asset: new_id };
-                // Keep the width, follow the new shape.
-                it.frame.h = it.frame.w * h / w.max(1.0);
+            if kind == Kind::Banner {
+                let ow = app.doc.width;
+                app.doc.set_banner(crate::model::BannerSetup { sheets: s.sheets, tall: s.tall });
+                let (nw, nh) = (app.doc.width, app.doc.height);
+                app.doc.width = ow;
+                app.doc.resize_pages(nw, nh, s.fit);
+            } else {
+                if let Some(pr) = crate::kinds::sheet_presets(kind).get(s.option) {
+                    app.doc.sheet = Some(pr.layout.clone());
+                }
+                app.doc.landscape = page.0 > page.1;
+                app.doc.resize_pages(page.0, page.1, s.fit);
             }
+            app.fit_pending = true;
+            *close = true;
         }
-        *close = true;
-    }
+    });
 }
 
 #[cfg(test)]

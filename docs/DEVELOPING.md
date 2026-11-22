@@ -20,6 +20,13 @@ Main parts of `src/`:
 | `model.rs`, `kinds.rs` | The design (`.pcraft` is this as JSON) and the project kinds and paper sizes |
 | `raster.rs`, `effects.rs`, `export.rs` | Drawing a design to pixels, effects, PDF / picture output and printing |
 | `fonts.rs`, `online.rs`, `ai.rs` | Fonts, online fonts and pictures, optional AI pictures |
+| `photo.rs`, `photo_editor.rs` | Photo changes (crop, color, effects, cut-outs) and the Photo Editor window |
+| `update.rs` | Update checker: finds the release file matching this install, downloads, checks the SHA-256, installs |
+| `templates.rs` | Ready-made designs (built in code; see `--design-sheet` below) |
+| `calendar.rs` | Calendar maker: dates, US holidays, month grids |
+| `merge.rs` | Address merge fields («Name», «Address»…) filled in per person when printing |
+| `report.rs` | Report a Problem or Suggest an Idea: fills in a GitHub issue form (field ids match `.github/ISSUE_TEMPLATE`) |
+| `widgets.rs` | Shared controls; `widgets::slider` / `widgets::number` add mouse-wheel and arrow-key control |
 | `legacy/` | Readers for older project files (`.sig` and siblings) and `.CDT` art packs |
 | `platform.rs` | Everything that differs between the desktop and browser versions |
 
@@ -104,13 +111,28 @@ the window and quits. Switches (environment variables):
 
 | Variable | Values |
 |---|---|
-| `PRINTCRAFT_SAMPLE` | `card` (a 3-page card); otherwise a poster |
+| `PRINTCRAFT_SAMPLE` | `card` (a 3-page card), `calendar` (a filled month), `lines` (every line style and flourish); otherwise a poster |
+| `PRINTCRAFT_LAYOUT` | `modern` |
 | `PRINTCRAFT_PAGES` | `legacy` (one page at a time) or `tiled` (side by side) |
 | `PRINTCRAFT_LOOK` | `dark` |
-| `PRINTCRAFT_OPEN` | `google` (with the Pictures window open) |
+| `PRINTCRAFT_OPEN` | `google` (the Pictures window), `new` / `new-calendar` (New Project), `pagesetup`, `report`, `update` (a real check), or `photo:<tool>[:<cut-out tool>]` (the Photo Editor on a made-up photo; tools 0 crop … 5 cut out; cut-out tool 0 starts with a heart shape, 2 with a magic-wand pick) |
+
+`printcraft --design-sheet out.png` draws every ready-made design on one
+picture, for checking them after a change.
 
 `printcraft --export <project> <out.pdf|out.png>` converts without a window,
 which is handy for checking how an older project file is read.
+
+## Updates
+
+`update::detect` works out how the running copy was installed (Windows
+setup/MSI/portable, macOS app, AppImage, Flatpak, .deb, .rpm, tarball) and
+`Release::asset_for` picks the release file with the same package type and
+processor, using the names from `.github/scripts/release-names.sh`; keep the
+two in step. Downloads go to the Downloads folder and are checked against the
+`sha256:` digest GitHub lists for each release file. The Flatpak installs its
+update through `flatpak-spawn --host` (the manifest allows
+`org.freedesktop.Flatpak`).
 
 ## Ruler guidelines and pages
 

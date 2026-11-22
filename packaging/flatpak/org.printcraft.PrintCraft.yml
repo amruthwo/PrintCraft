@@ -22,6 +22,7 @@ finish-args:
   - --filesystem=xdg-download
   - --filesystem=xdg-pictures   # My Art lives in Pictures/PrintCraft Art
   - --filesystem=home:ro        # art collections and older projects wherever they are
+  - --talk-name=org.freedesktop.Flatpak   # installing a downloaded update (Help > Check for Updates)
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
   build-args:

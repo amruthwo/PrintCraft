@@ -1,0 +1,40 @@
+# Idea form. PrintCraft's "Report a Problem or Suggest an Idea" window fills it in (field ids must match src/report.rs).
+name: Idea or wish
+description: Something you'd like PrintCraft to do
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What's your idea?
+      description: What would you like PrintCraft to do?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: How would it help you?
+  - type: input
+    id: version
+    attributes:
+      label: PrintCraft version
+      placeholder: "0.1.0"
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Web browser
+        - Other
+  - type: input
+    id: os_details
+    attributes:
+      label: OS version and CPU
+  - type: textarea
+    id: files
+    attributes:
+      label: Pictures, examples or files
+      description: Drag files here. Only share files you're allowed to share.

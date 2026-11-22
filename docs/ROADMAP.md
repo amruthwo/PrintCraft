@@ -50,8 +50,6 @@ hosting is built in; the folder can be uploaded anywhere.
 
 - Ready-made designs (templates) and exact placement when opening older
   projects (see "Opening older projects" below).
-- Calendars that fill in their own dates, mail merge onto labels and
-  envelopes from the address book, envelope addressing.
 - Mixed styles inside one text box (one font/size/color per box today),
   bullets and numbering, drop caps, text wrap around pictures, spell check.
 - Freehand drawing, gradient fills for shapes, picture frames.

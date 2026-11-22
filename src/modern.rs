@@ -9,7 +9,7 @@ use crate::icons::{self, Icon};
 use crate::model::*;
 use crate::theme;
 
-const RAIL: [(&str, Icon); 8] = [
+const RAIL: [(&str, Icon); 9] = [
     ("Design", Icon::Sparkle),
     ("Elements", Icon::Seal),
     ("Text", Icon::Letter),
@@ -18,6 +18,7 @@ const RAIL: [(&str, Icon); 8] = [
     ("Draw", Icon::Pencil),
     ("Effects", Icon::Wand),
     ("Print", Icon::Flag),
+    ("All Tools", Icon::Help),
 ];
 
 pub fn rail(ui: &mut egui::Ui, app: &mut App) -> Option<Act> {
@@ -53,6 +54,26 @@ pub fn drawer(ui: &mut egui::Ui, app: &mut App) -> Option<Act> {
     let Some(k) = app.modern_drawer else { return None };
     ui.heading(RAIL[k].0);
     ui.add_space(6.0);
+    if k == 3 {
+        // Search straight from here: one step to Google Images.
+        ui.horizontal(|ui| {
+            let edit = ui.add(egui::TextEdit::singleline(&mut app.picture_words).hint_text("Find pictures online…").desired_width(ui.available_width() - 34.0));
+            let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if ui.button("🔍").on_hover_text("Search Google Images").clicked() || enter {
+                out = Some(Act::SearchPictures(app.picture_words.clone()));
+            }
+        });
+        ui.add_space(6.0);
+    }
+    if k == 8 {
+        // Everything, as in the Classic tool panel.
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            if let Some(a) = crate::chrome::all_tools(ui, app) {
+                out = Some(a);
+            }
+        });
+        return out;
+    }
     let mut t = |ui: &mut egui::Ui, l: &str, s: &str, a: Act| {
         if tile(ui, l, s) {
             out = Some(a);
@@ -83,7 +104,6 @@ pub fn drawer(ui: &mut egui::Ui, app: &mut App) -> Option<Act> {
         }
         3 => {
             t(ui, "Google Images", "Find photos and clip art", Act::Gallery(1));
-            t(ui, "My content packs", "Art collections you own", Act::Gallery(0));
             t(ui, "From my computer", "A picture file", Act::PictureFromFile);
             t(ui, "Create with AI", "Describe it, get a picture", Act::AiPictures);
         }
@@ -125,6 +145,14 @@ pub fn context_bar(ui: &mut egui::Ui, app: &mut App) -> Option<Act> {
             }
         }
         ui.separator();
+        // The same color, line and fade buttons as the Classic toolbar: for
+        // what's selected, or for new things when nothing is.
+        crate::chrome::color_button(ui, app, crate::chrome::Ink::Fill);
+        crate::chrome::color_button(ui, app, crate::chrome::Ink::Line);
+        crate::chrome::color_button(ui, app, crate::chrome::Ink::Text);
+        crate::chrome::line_button(ui, app);
+        crate::chrome::tint_button(ui, app);
+        ui.separator();
         let sel = app.first_selected().map(|i| i.content.clone());
         match sel {
             None => {
@@ -140,10 +168,13 @@ pub fn context_bar(ui: &mut egui::Ui, app: &mut App) -> Option<Act> {
                 if matches!(c, Content::Picture { .. }) && ui.button("Photo Editor").clicked() {
                     out = Some(Act::Photo(0));
                 }
+                if matches!(c, Content::Picture { .. }) && ui.button("Replace").on_hover_text("Swap for another picture; it keeps its place and effects").clicked() {
+                    out = Some(Act::ReplacePicture);
+                }
                 if matches!(c, Content::Headline { .. }) && ui.button("Edit headline").clicked() {
                     out = Some(Act::Headline);
                 }
-                for (l, a) in [("Shadow", Act::Shadow), ("Group", Act::Group), ("Ungroup", Act::Ungroup), ("Front", Act::ToFront), ("Back", Act::ToBack), ("Delete", Act::Delete)] {
+                for (l, a) in [("Copy", Act::Copy), ("Paste", Act::Paste), ("Duplicate", Act::Duplicate), ("Shadow", Act::Shadow), ("Glow", Act::Glow), ("Group", Act::Group), ("Ungroup", Act::Ungroup), ("Front", Act::ToFront), ("Back", Act::ToBack), ("Delete", Act::Delete)] {
                     if app.enabled(&a) && ui.button(l).clicked() {
                         out = Some(a);
                     }

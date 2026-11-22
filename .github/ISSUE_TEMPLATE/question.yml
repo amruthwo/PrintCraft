@@ -1,0 +1,34 @@
+# Question form. PrintCraft's "Report a Problem or Suggest an Idea" window fills it in (field ids must match src/report.rs).
+name: Question
+description: Ask how to do something in PrintCraft
+labels: ["question"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: What's your question?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: PrintCraft version
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Web browser
+        - Other
+  - type: input
+    id: os_details
+    attributes:
+      label: OS version and CPU
+  - type: textarea
+    id: files
+    attributes:
+      label: Pictures or files
+      description: Drag files here. Only share files you're allowed to share.

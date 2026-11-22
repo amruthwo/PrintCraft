@@ -316,6 +316,9 @@ pub enum Content {
     Line,
     Picture { asset: u64 },
     Border { style: u8 },
+    /// A decorative divider or flourish (see raster::ORNAMENT_NAMES),
+    /// drawn in the line color with the fill color as its accent.
+    Ornament { style: u8 },
 }
 
 /// A stretch of letters (character positions start..end) with its own style.
@@ -464,6 +467,10 @@ pub struct Item {
     /// Frame style number (0 none, 1 thin ... 8 drop shadow); see effects.rs.
     #[serde(default)]
     pub frame_style: u8,
+    /// How lines and outlines are drawn (see raster::LINE_STYLES): solid,
+    /// dashed, dotted, double, wavy and so on.
+    #[serde(default)]
+    pub line_style: u8,
     #[serde(default)]
     pub locked: bool,
     /// 1 = solid, 0 = invisible.
@@ -496,6 +503,7 @@ impl Item {
             glow: None,
             glow_size: crate::effects::GLOW_START_SIZE,
             frame_style: 0,
+            line_style: 0,
             locked: false,
             opacity: 1.0,
             content,
@@ -509,6 +517,7 @@ impl Item {
             Content::Line => "Line",
             Content::Picture { .. } => "Picture",
             Content::Border { .. } => "Border",
+            Content::Ornament { .. } => "Flourish",
             Content::Group { .. } => "Group",
         }
     }
@@ -536,6 +545,9 @@ pub struct Panel {
     pub pattern: u8,
     #[serde(default = "pattern_ink")]
     pub pattern_color: Rgba,
+    /// Size of the background pattern (1 = normal; 0.5 finer, 2 bigger).
+    #[serde(default = "one")]
+    pub pattern_scale: f32,
     /// Alignment guidelines placed from the rulers. On screen only: they
     /// never print or export.
     #[serde(default)]
@@ -654,7 +666,7 @@ impl Project {
         let panels = kind
             .panel_names()
             .iter()
-            .map(|n| Panel { name: (*n).into(), background: Rgba::WHITE, items: Vec::new(), pattern: 0, pattern_color: pattern_ink(), guides: Vec::new() })
+            .map(|n| Panel { name: (*n).into(), background: Rgba::WHITE, items: Vec::new(), pattern: 0, pattern_color: pattern_ink(), pattern_scale: 1.0, guides: Vec::new() })
             .collect();
         let mut p = Self { format: 1, kind, width: w, height: h, landscape, panels, assets: BTreeMap::new(), next_id: 1, notes: Vec::new(), sheet: None, banner: None };
         if kind == Kind::Banner {
@@ -680,6 +692,55 @@ impl Project {
         self.width = seg * b.sheets.max(1) as f32;
         self.height = h;
         self.banner = Some(b);
+    }
+
+    /// The sheet of paper the design prints on, for kinds whose page comes
+    /// from a whole sheet (see `Kind::paper_use`).
+    pub fn paper(&self) -> Option<(f32, f32)> {
+        use crate::kinds::PaperUse;
+        Some(match self.kind.paper_use()? {
+            PaperUse::Whole => (self.width, self.height),
+            PaperUse::Quarter => (self.width * 2.0, self.height * 2.0),
+            PaperUse::Half if self.width <= self.height => (self.width * 2.0, self.height),
+            PaperUse::Half => (self.width, self.height * 2.0),
+        })
+    }
+
+    /// Change the page size. With `fit`, everything on every page is scaled
+    /// evenly and centred so it still fits; borders keep their distance
+    /// from the edge of the page.
+    pub fn resize_pages(&mut self, w: f32, h: f32, fit: bool) {
+        let (ow, oh) = (self.width, self.height);
+        self.width = w;
+        self.height = h;
+        if !fit || ow <= 0.0 || oh <= 0.0 || ((w - ow).abs() < 1e-4 && (h - oh).abs() < 1e-4) {
+            return;
+        }
+        let k = (w / ow).min(h / oh);
+        let (dx, dy) = ((w - ow * k) / 2.0, (h - oh * k) / 2.0);
+        for p in &mut self.panels {
+            for it in &mut p.items {
+                if matches!(it.content, Content::Border { .. }) {
+                    it.frame.w = (w - (ow - it.frame.w)).max(0.1);
+                    it.frame.h = (h - (oh - it.frame.h)).max(0.1);
+                    continue;
+                }
+                it.frame = Frame::new(it.frame.x * k + dx, it.frame.y * k + dy, it.frame.w * k, it.frame.h * k);
+                if let Content::Text { look, runs, .. } = &mut it.content {
+                    look.size *= k;
+                    for r in runs.iter_mut() {
+                        if let Some(s) = &mut r.size {
+                            *s *= k;
+                        }
+                    }
+                } else if let Some(l) = it.look_mut() {
+                    l.size *= k;
+                }
+            }
+            for g in &mut p.guides {
+                g.at = if g.vertical { g.at * k + dx } else { g.at * k + dy };
+            }
+        }
     }
 
     pub fn fresh_id(&mut self) -> u64 {
@@ -734,5 +795,37 @@ mod guide_tests {
         let json = r#"{"name":"Front","background":[255,255,255,255],"items":[]}"#;
         let p: Panel = serde_json::from_str(json).unwrap();
         assert!(p.guides.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod page_size_tests {
+    use super::*;
+    use crate::kinds::Kind;
+
+    #[test]
+    fn paper_matches_the_page() {
+        assert_eq!(Project::new(Kind::Sign, false).paper(), Some((8.5, 11.0)));
+        assert_eq!(Project::new(Kind::CardQuarter, false).paper(), Some((8.5, 11.0)));
+        assert_eq!(Project::new(Kind::CardHalf, false).paper(), Some((11.0, 8.5)));
+        assert_eq!(Project::new(Kind::Label, false).paper(), None);
+    }
+
+    #[test]
+    fn resizing_scales_and_centres() {
+        let mut p = Project::new(Kind::Sign, false);
+        let look = TextLook { size: 20.0, ..Default::default() };
+        p.panels[0].items.push(Item::new(1, Frame::new(1.0, 1.0, 2.0, 2.0), Content::Text { text: "Hi".into(), look, shape: None, fit: false, runs: Vec::new() }));
+        p.panels[0].items.push(Item::new(2, Frame::new(0.25, 0.25, 8.0, 10.5), Content::Border { style: 0 }));
+        // Letter to Tabloid: twice as tall would overflow sideways, so it grows by 11/8.5 and is centred down the page.
+        p.resize_pages(11.0, 17.0, true);
+        let k = 11.0 / 8.5;
+        let t = &p.panels[0].items[0];
+        assert!((t.frame.w - 2.0 * k).abs() < 1e-4);
+        assert!((t.frame.y - (1.0 * k + (17.0 - 11.0 * k) / 2.0)).abs() < 1e-4);
+        assert!((t.look().unwrap().size - 20.0 * k).abs() < 1e-3);
+        // The border keeps its quarter-inch margins.
+        let b = &p.panels[0].items[1];
+        assert!((b.frame.w - 10.5).abs() < 1e-4 && (b.frame.h - 16.5).abs() < 1e-4);
     }
 }

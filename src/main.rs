@@ -9,6 +9,7 @@
 #![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports))]
 
 mod app;
+mod calendar;
 mod canvas;
 mod colors;
 mod effects;
@@ -31,9 +32,14 @@ mod legacy;
 mod model;
 mod online;
 mod photo;
+mod photo_editor;
+mod merge;
 mod platform;
+mod report;
+mod update;
 mod raster;
 mod sample;
+mod templates;
 mod settings;
 mod theme;
 
@@ -61,6 +67,22 @@ fn main() -> eframe::Result {
                 std::process::exit(2);
             };
             std::process::exit(match cli::export(PathBuf::from(src), PathBuf::from(dst)) {
+                Ok(msg) => {
+                    println!("{msg}");
+                    0
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    1
+                }
+            });
+        } else if a == "--design-sheet" {
+            // printcraft --design-sheet <out.png>: every ready-made design on one picture
+            let Some(out) = args.next() else {
+                eprintln!("usage: printcraft --design-sheet <out.png>");
+                std::process::exit(2);
+            };
+            std::process::exit(match cli::design_sheet(PathBuf::from(out)) {
                 Ok(msg) => {
                     println!("{msg}");
                     0
@@ -127,7 +149,16 @@ fn main() {
     wasm_bindgen_futures::spawn_local(async {
         let Some(doc) = web_sys::window().and_then(|w| w.document()) else { return };
         let Some(canvas) = doc.get_element_by_id("printcraft").and_then(|e| e.dyn_into::<web_sys::HtmlCanvasElement>().ok()) else { return };
-        let started = eframe::WebRunner::new().start(canvas, eframe::WebOptions::default(), Box::new(|cc| Ok(Box::new(Shell::new(cc, None, None))))).await;
+        let started = eframe::WebRunner::new()
+            .start(
+                canvas,
+                eframe::WebOptions::default(),
+                Box::new(|cc| {
+                    crate::platform::listen_for_pasted_pictures(&cc.egui_ctx);
+                    Ok(Box::new(Shell::new(cc, None, None)))
+                }),
+            )
+            .await;
         if let Some(loading) = doc.get_element_by_id("loading") {
             match started {
                 Ok(()) => loading.remove(),
@@ -149,6 +180,7 @@ struct Shell {
 impl Shell {
     fn shortcuts(&mut self, ctx: &egui::Context) -> Vec<Act> {
         let typing = self.app.editing.is_some() || ctx.egui_wants_keyboard_input();
+        let control_focused = ctx.memory(|m| m.focused().is_some());
         let mut acts = Vec::new();
         ctx.input_mut(|i| {
             use egui::{Key, KeyboardShortcut as K, Modifiers as M};
@@ -183,6 +215,16 @@ impl Shell {
                     acts.push(a);
                 }
             }
+            // Ctrl + / Ctrl − / Ctrl 0 zoom the page, not the whole window.
+            if i.consume_key(cmd, Key::Plus) || i.consume_key(cmd, Key::Equals) || i.consume_key(M::COMMAND | M::SHIFT, Key::Equals) {
+                acts.push(Act::ZoomIn);
+            }
+            if i.consume_key(cmd, Key::Minus) {
+                acts.push(Act::ZoomOut);
+            }
+            if i.consume_key(cmd, Key::Num0) {
+                acts.push(Act::Fit);
+            }
             if !typing {
                 if i.consume_key(M::NONE, Key::Delete) || i.consume_key(M::NONE, Key::Backspace) {
                     acts.push(if self.app.guide_sel.is_some() { Act::DeleteGuide } else { Act::Delete });
@@ -191,7 +233,8 @@ impl Shell {
                     self.app.guide_sel = None;
                 }
                 for (key, dx, dy) in [(Key::ArrowLeft, -1.0, 0.0), (Key::ArrowRight, 1.0, 0.0), (Key::ArrowUp, 0.0, -1.0), (Key::ArrowDown, 0.0, 1.0)] {
-                    if i.consume_key(M::NONE, key) {
+                    // A focused slider or control uses the arrow keys itself.
+                    if !control_focused && i.consume_key(M::NONE, key) {
                         self.app.nudge(dx * app::NUDGE, dy * app::NUDGE);
                     }
                 }
@@ -207,7 +250,10 @@ impl Shell {
                 match e {
                     egui::Event::Copy if !typing => acts.push(Act::Copy),
                     egui::Event::Cut if !typing => acts.push(Act::Cut),
-                    egui::Event::Paste(_) if !typing => paste = true,
+                    egui::Event::Paste(t) if !typing => {
+                        self.app.pasted_text = Some(t.clone());
+                        paste = true;
+                    }
                     // Pictures on the clipboard don't come as a Paste event.
                     egui::Event::Key { key: Key::V, pressed: true, modifiers, .. } if !typing && modifiers.command => paste = true,
                     _ => {}
@@ -218,6 +264,28 @@ impl Shell {
             }
         });
         acts
+    }
+
+    /// Opening the problem report: a picture of the window first (with the
+    /// menus closed and before the form is on screen), then the form.
+    fn report_step(&mut self, ctx: &egui::Context) {
+        match self.app.report_stage {
+            2 => {
+                self.app.report_stage = 1;
+                *self.app.report_shot.lock().unwrap() = None;
+                let slot = self.app.report_shot.clone();
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::ScreenshotCallback::new(move |img| {
+                    *slot.lock().unwrap() = Some((*img).clone());
+                })));
+                ctx.request_repaint();
+            }
+            1 => {
+                self.app.report_stage = 0;
+                let st = crate::report::ReportState::new(&self.app);
+                self.app.dialogs.push(dialogs::Dialog::Report(Box::new(st)));
+            }
+            _ => {}
+        }
     }
 
     fn screenshot_step(&mut self, ctx: &egui::Context) {
@@ -473,6 +541,9 @@ impl eframe::App for Shell {
         }
         self.safety(&ctx);
         self.app.poll_library();
+        self.app.poll_update();
+        self.app.check_replace_target();
+        self.report_step(&ctx);
         // Make sure fonts used on this page are loaded for typing.
         if let Some((id, _)) = &self.app.editing
             && let Some(l) = self.app.item(*id).and_then(|i| i.look().cloned())

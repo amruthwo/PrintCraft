@@ -113,6 +113,11 @@ mod imp {
         directories::UserDirs::new().and_then(|u| u.picture_dir().map(|p| p.to_path_buf()))
     }
 
+    /// The person's Downloads folder.
+    pub fn downloads_dir() -> Option<PathBuf> {
+        directories::UserDirs::new().and_then(|u| u.download_dir().map(|p| p.to_path_buf()))
+    }
+
     fn settings_file() -> Option<PathBuf> {
         dirs().map(|d| d.config_dir().join("settings.json"))
     }
@@ -269,6 +274,10 @@ mod imp {
         None
     }
 
+    pub fn downloads_dir() -> Option<PathBuf> {
+        None
+    }
+
     fn storage() -> Option<web_sys::Storage> {
         window()?.local_storage().ok().flatten()
     }
@@ -323,6 +332,38 @@ mod imp {
     async fn read_file(file: &web_sys::File) -> Option<Vec<u8>> {
         let buf = wasm_bindgen_futures::JsFuture::from(file.array_buffer()).await.ok()?;
         Some(js_sys::Uint8Array::new(&buf).to_vec())
+    }
+
+    /// Pictures pasted with Ctrl+V (for example after Copy Image on another
+    /// site) arrive like chosen files. Text pastes are left to egui.
+    pub fn listen_for_pasted_pictures(ctx: &egui::Context) {
+        let Some(doc) = window().and_then(|w| w.document()) else { return };
+        let ctx = ctx.clone();
+        let on_paste = Closure::<dyn FnMut(web_sys::ClipboardEvent)>::new(move |e: web_sys::ClipboardEvent| {
+            let Some(files) = e.clipboard_data().and_then(|d| d.files()) else { return };
+            let mut took = false;
+            for i in 0..files.length() {
+                let Some(file) = files.get(i) else { continue };
+                if !file.type_().starts_with("image/") {
+                    continue;
+                }
+                took = true;
+                let ctx = ctx.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Some(bytes) = read_file(&file).await {
+                        let name = if file.name().is_empty() || file.name() == "image.png" { "Pasted picture.png".to_string() } else { file.name() };
+                        deliver(Want::Picture, Opened { name, bytes, path: None });
+                        ctx.request_repaint();
+                    }
+                });
+            }
+            if took {
+                e.prevent_default();
+                e.stop_propagation();
+            }
+        });
+        let _ = doc.add_event_listener_with_callback_and_bool("paste", on_paste.as_ref().unchecked_ref(), true);
+        on_paste.forget();
     }
 
     /// Files dropped on the page: read them, then hand them over.

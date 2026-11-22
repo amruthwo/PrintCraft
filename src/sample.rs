@@ -66,3 +66,65 @@ pub fn card() -> Project {
     p.panels[0].guides = vec![Guide { vertical: true, at: p.width / 2.0 }];
     p
 }
+
+/// A made-up photo (sky, sun, hills and two balls) for checking the Photo
+/// Editor's look: see `PRINTCRAFT_OPEN=photo` in docs/DEVELOPING.md.
+pub fn test_photo() -> Vec<u8> {
+    let (w, h) = (600u32, 400u32);
+    let img = image::RgbaImage::from_fn(w, h, |x, y| {
+        let (fx, fy) = (x as f32, y as f32);
+        let ball = |cx: f32, cy: f32, r: f32| (fx - cx).hypot(fy - cy) < r;
+        let c: [u8; 3] = if ball(200.0, 285.0, 58.0) {
+            [214, 52, 64]
+        } else if ball(392.0, 300.0, 42.0) {
+            [52, 102, 214]
+        } else if ball(480.0, 88.0, 46.0) {
+            [250, 206, 60]
+        } else if fy > 250.0 + 30.0 * (fx / 90.0).sin() {
+            [72, 160 - (fy as u32 / 8) as u8, 82]
+        } else {
+            let t = fy / 260.0;
+            [(150.0 + 80.0 * t) as u8, (200.0 + 40.0 * t) as u8, 245]
+        };
+        image::Rgba([c[0], c[1], c[2], 255])
+    });
+    crate::photo::to_png(&image::DynamicImage::ImageRgba8(img))
+}
+
+/// Every line style on shapes, a script headline with an outline, and every
+/// flourish: for checking how they draw (PRINTCRAFT_SAMPLE=lines).
+pub fn lines() -> Project {
+    let mut p = Project::new(Kind::Sign, false);
+    let mut add = |p: &mut Project, frame: Frame, content: Content, f: &dyn Fn(&mut Item)| {
+        let id = p.fresh_id();
+        let mut it = Item::new(id, frame, content);
+        f(&mut it);
+        p.panels[0].items.push(it);
+    };
+    for i in 0..9u8 {
+        let (x, y) = (0.4 + (i % 3) as f32 * 2.7, 0.4 + (i / 3) as f32 * 1.25);
+        add(&mut p, Frame::new(x, y, 2.3, 0.95), Content::Shape { outline: Outline::Rounded }, &move |it| {
+            it.fill = Rgba::hex("#eef4fb");
+            it.stroke = Rgba::hex("#2f6fb0");
+            it.stroke_pt = 2.5;
+            it.line_style = i;
+        });
+    }
+    add(&mut p, Frame::new(0.6, 4.3, 7.3, 0.3), Content::Line, &|it| {
+        it.stroke = Rgba::hex("#d1495b");
+        it.stroke_pt = 3.0;
+        it.line_style = 6;
+    });
+    let look = TextLook { color: Rgba::hex("#e8743b"), family: crate::fonts::SCRIPT_FAMILY.into(), align: Align::Center, ..Default::default() };
+    add(&mut p, Frame::new(0.5, 4.7, 7.5, 1.5), Content::Headline { text: "Headline".into(), look, flair: Flair::BlendDown, warp: Warp::Wave, second: Rgba::hex("#d1495b"), outline: Rgba::hex("#111111"), stretch: false, bend: 1.0, bulge: 0.0 }, &|_| {});
+    for i in 0..12u8 {
+        let (x, y) = (0.4 + (i % 2) as f32 * 4.0, 6.4 + (i / 2) as f32 * 0.75);
+        add(&mut p, Frame::new(x, y, 3.6, 0.6), Content::Ornament { style: i }, &|it| {
+            it.stroke = Rgba::hex("#333333");
+            it.fill = Rgba::hex("#c9a227");
+            it.stroke_pt = 2.0;
+        });
+    }
+    p
+}
+

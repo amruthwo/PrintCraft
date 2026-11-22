@@ -147,7 +147,7 @@ fn paint_page(app: &mut App, ctx: &egui::Context, painter: &egui::Painter, pg: u
         let key = {
             let mut h = std::collections::hash_map::DefaultHasher::new();
             let p = &app.doc.panels[pg];
-            (p.pattern, p.pattern_color.0, p.pattern_color.1, p.pattern_color.2, bg.0, bg.1, bg.2, (ppi / 8.0) as u32, (pw * 100.0) as u32, (ph * 100.0) as u32).hash(&mut h);
+            (p.pattern, p.pattern_color.0, p.pattern_color.1, p.pattern_color.2, bg.0, bg.1, bg.2, (ppi / 8.0) as u32, (pw * 100.0) as u32, (ph * 100.0) as u32, (p.pattern_scale * 100.0) as u32).hash(&mut h);
             h.finish()
         };
         let bslot = u64::MAX - 7 - pg as u64;
@@ -378,7 +378,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) -> Option<Act> {
         }
     }
 
-    for (pg, r) in placed.clone() {
+    // The page being worked on goes last, so something dragged past its
+    // edge (onto another page) stays in sight on top.
+    let mut order = placed.clone();
+    order.sort_by_key(|(pg, _)| *pg == app.panel);
+    for (pg, r) in order {
         if r.expand(24.0).intersects(area) {
             let v = View { origin: r.min, scale };
             paint_page(app, &ctx, &painter, pg, &v, &pal);
@@ -535,6 +539,28 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) -> Option<Act> {
             }
             app.drag = None;
         } else {
+            // Let go over another page: the dragged things move to that page,
+            // where they were dropped.
+            if matches!(app.drag, Some(Drag::Move { .. }))
+                && !legacy
+                && let Some(p) = now
+                && let Some(tg) = page_at(p)
+                && tg != app.panel
+                && let Some(target) = placed.iter().find(|x| x.0 == tg).map(|x| x.1)
+            {
+                let (dx, dy) = ((page_rect.min.x - target.min.x) / scale, (page_rect.min.y - target.min.y) / scale);
+                let ids = app.selected.clone();
+                let from = app.panel;
+                let (moving, keep): (Vec<Item>, Vec<Item>) = app.doc.panels[from].items.drain(..).partition(|i| ids.contains(&i.id) && !i.locked);
+                app.doc.panels[from].items = keep;
+                for mut it in moving {
+                    it.frame.x += dx;
+                    it.frame.y += dy;
+                    app.doc.panels[tg].items.push(it);
+                }
+                app.panel = tg;
+                app.notify(format!("Moved to {}.", app.doc.panels[tg].name), &ctx);
+            }
             app.end_drag();
         }
     }
@@ -609,7 +635,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) -> Option<Act> {
     // Right-click menu for the item under the pointer.
     resp.context_menu(|ui| {
         let pick = |ui: &mut egui::Ui, out: &mut Option<Act>, l: &str, a: Act| {
-            if ui.add_enabled(app.enabled(&a), egui::Button::new(l)).clicked() {
+            let mut r = ui.add_enabled(app.enabled(&a), egui::Button::new(l));
+            if let Some(why) = app.why_disabled(&a) {
+                r = r.on_disabled_hover_text(why);
+            }
+            if r.clicked() {
                 *out = Some(a);
                 ui.close();
             }
@@ -618,7 +648,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) -> Option<Act> {
             pick(ui, &mut out, "Paste", Act::Paste);
             pick(ui, &mut out, "Insert Text Box", Act::TextBox);
             pick(ui, &mut out, "Insert Headline...", Act::Headline);
-            pick(ui, &mut out, "Insert Art...", Act::Gallery(0));
+            pick(ui, &mut out, "Insert a Picture...", Act::Gallery(1));
             pick(ui, &mut out, "Page Color...", Act::BackgroundColor);
             return;
         }
@@ -669,7 +699,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) -> Option<Act> {
                 pick(ui, &mut out, "Apply Stretch Text", Act::StretchText);
             }
             Some(Content::Headline { .. }) => pick(ui, &mut out, "Edit Headline...", Act::Headline),
-            Some(Content::Picture { .. }) => pick(ui, &mut out, "Photo Editor...", Act::Photo(0)),
+            Some(Content::Picture { .. }) => {
+                pick(ui, &mut out, "Photo Editor...", Act::Photo(0));
+                pick(ui, &mut out, "Replace Picture...", Act::ReplacePicture);
+            }
             _ => {}
         }
         if app.enabled(&Act::Group) {
@@ -859,8 +892,9 @@ fn press(app: &mut App, view: &View, p: Pos2, items: &[Item], secondary: bool, c
                 let c = Rgba(d[i], d[i + 1], d[i + 2], 255);
                 app.settings.remember_color(c);
                 match mode {
-                    0 => crate::chrome::apply_color(app, true, c),
-                    1 => crate::chrome::apply_color(app, false, c),
+                    0 => crate::chrome::apply_color(app, crate::chrome::Ink::Fill, c),
+                    1 => crate::chrome::apply_color(app, crate::chrome::Ink::Line, c),
+                    2 => crate::chrome::apply_color(app, crate::chrome::Ink::Text, c),
                     _ => {}
                 }
                 app.notify(format!("Picked {}. It's in Recently Used.", crate::colors::hex(c)), ctx);
@@ -1028,6 +1062,10 @@ fn drag_to(app: &mut App, view: &View, p: Pos2, ctx: &egui::Context) {
                     _ => x0 = lx.min(x1 - min),
                 }
                 let is_line = matches!(it.content, Content::Line);
+                if is_line {
+                    // A line only gets longer or shorter; its angle comes from turning it.
+                    (y0, y1) = (start.y, start.y + start.h);
+                }
                 let keeps = matches!(it.content, Content::Picture { .. } | Content::Group { .. });
                 if (keep_shape ^ keeps) && [0, 2, 4, 6].contains(&handle) && !is_line {
                     let aspect = start.w / start.h.max(0.001);

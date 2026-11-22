@@ -323,7 +323,7 @@ pub fn render_item(item: &Item, project: &Project, fonts: &FontBook, pics: &Pict
     let h = (item.frame.h * ppi).max(1.0);
     // Room around the item for strokes, frames, shadows and glows.
     let size = crate::effects::effect_size(item.frame.w, item.frame.h);
-    let mut room = item.stroke_pt / 72.0 + crate::effects::FrameStyle::from_code(item.frame_style).reach();
+    let mut room = item.stroke_pt / 72.0 * line_style_reach(item.line_style) + crate::effects::FrameStyle::from_code(item.frame_style).reach();
     if let Some(s) = &item.shadow {
         let (dx, dy, blur) = shadow_geometry(item, s);
         room = room.max(dx.abs().max(dy.abs()) + 2.0 * blur);
@@ -346,22 +346,18 @@ pub fn render_item(item: &Item, project: &Project, fonts: &FontBook, pics: &Pict
                 if !item.fill.is_clear() {
                     pm.fill_path(&path, &solid(color(item.fill, item.tint)), FillRule::Winding, Transform::identity(), None);
                 }
-                if !item.stroke.is_clear() && stroke_px > 0.0 {
-                    let st = Stroke { width: stroke_px, line_join: tiny_skia::LineJoin::Round, ..Default::default() };
-                    pm.stroke_path(&path, &solid(color(item.stroke, item.tint)), &st, Transform::identity(), None);
+                if !item.stroke.is_clear() {
+                    let moved: Vec<(f32, f32)> = pts.iter().map(|(x, y)| (x + pad, y + pad)).collect();
+                    styled_stroke(&mut pm, &moved, true, item.line_style, stroke_px, color(item.stroke, item.tint));
                 }
             }
         }
         Content::Line => {
-            let mut pb = PathBuilder::new();
-            pb.move_to(pad, pad);
-            pb.line_to(pad + w, pad + h);
-            if let Some(path) = pb.finish() {
-                let c = if item.stroke.is_clear() { Rgba::BLACK } else { item.stroke };
-                let st = Stroke { width: stroke_px.max(1.0), line_cap: tiny_skia::LineCap::Round, ..Default::default() };
-                pm.stroke_path(&path, &solid(color(c, item.tint)), &st, Transform::identity(), None);
-            }
+            // Straight across the middle of its box; the turn handle sets the angle.
+            let c = if item.stroke.is_clear() { Rgba::BLACK } else { item.stroke };
+            styled_stroke(&mut pm, &[(pad, pad + h / 2.0), (pad + w, pad + h / 2.0)], false, item.line_style, stroke_px, color(c, item.tint));
         }
+        Content::Ornament { style } => draw_ornament(&mut pm, *style, item, (pad, pad, w, h), ppi),
         Content::Picture { asset } => {
             if let Some(src) = pics.get(*asset, project) {
                 let sx = w / src.width() as f32;
@@ -388,8 +384,8 @@ pub fn render_item(item: &Item, project: &Project, fonts: &FontBook, pics: &Pict
                     let fill = if item.fill.is_clear() { Rgba::WHITE } else { item.fill };
                     pm.fill_path(&path, &solid(color(fill, item.tint)), FillRule::EvenOdd, Transform::identity(), None);
                     let sc = if item.stroke.is_clear() { Rgba::BLACK } else { item.stroke };
-                    let st = Stroke { width: stroke_px.max(1.0), line_join: tiny_skia::LineJoin::Round, ..Default::default() };
-                    pm.stroke_path(&path, &solid(color(sc, item.tint)), &st, Transform::identity(), None);
+                    let moved: Vec<(f32, f32)> = pts.iter().map(|(x, y)| (x + pad, y + pad)).collect();
+                    styled_stroke(&mut pm, &moved, true, item.line_style, stroke_px, color(sc, item.tint));
                 }
                 outline = Some(pts);
             } else {
@@ -454,11 +450,8 @@ fn frame_stroke(pm: &mut Pixmap, item: &Item, pad: f32, w: f32, h: f32, stroke_p
     if item.stroke.is_clear() || stroke_px <= 0.0 {
         return;
     }
-    if let Some(r) = tiny_skia::Rect::from_xywh(pad, pad, w, h) {
-        let path = PathBuilder::from_rect(r);
-        let st = Stroke { width: stroke_px, ..Default::default() };
-        pm.stroke_path(&path, &solid(color(item.stroke, item.tint)), &st, Transform::identity(), None);
-    }
+    let corners = [(pad, pad), (pad + w, pad), (pad + w, pad + h), (pad, pad + h)];
+    styled_stroke(pm, &corners, true, item.line_style, stroke_px, color(item.stroke, item.tint));
 }
 
 fn missing_picture(pm: &mut Pixmap, pad: f32, w: f32, h: f32) {
@@ -1062,8 +1055,17 @@ fn draw_headline(pm: &mut Pixmap, font: &FontRef, text: &str, look: &TextLook, s
         _ => 0.0,
     };
     if outline_w > 0.0 {
+        // One outline around all the letters together: stroked on its own
+        // layer, then everything inside the letters cleared, so joined or
+        // overlapping letters (script fonts) don't show lines where they meet.
         let c = if matches!(flair, Flair::Outline | Flair::Ghost) { main } else { edge_c };
-        pm.stroke_path(&path, &solid(c), &Stroke { width: outline_w, line_join: tiny_skia::LineJoin::Round, ..Default::default() }, Transform::identity(), None);
+        if let Some(mut layer) = Pixmap::new(pm.width(), pm.height()) {
+            layer.stroke_path(&path, &solid(c), &Stroke { width: outline_w * 2.0, line_join: tiny_skia::LineJoin::Round, ..Default::default() }, Transform::identity(), None);
+            let mut clear = solid(c);
+            clear.blend_mode = tiny_skia::BlendMode::Clear;
+            layer.fill_path(&path, &clear, FillRule::Winding, Transform::identity(), None);
+            pm.draw_pixmap(0, 0, layer.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+        }
     }
 }
 
@@ -1298,7 +1300,7 @@ pub fn render_panel(project: &Project, panel: usize, fonts: &FontBook, pics: &Pi
     let mut page = Pixmap::new(pw.max(1), ph.max(1))?;
     let p = project.panels.get(panel)?;
     page.fill(color(p.background, 1.0));
-    draw_pattern(&mut page, p.pattern, p.pattern_color, ppi);
+    draw_pattern(&mut page, p.pattern, p.pattern_color, ppi * p.pattern_scale.clamp(0.25, 4.0));
     for item in &p.items {
         compose(&mut page, item, project, fonts, pics, ppi, (0.0, 0.0));
     }
@@ -1595,6 +1597,372 @@ fn dots_random(pm: &mut Pixmap, w: f32, h: f32, ppi: f32, per_sq_in: f32, rnd: &
 pub fn background_image(panel: &Panel, w_in: f32, h_in: f32, ppi: f32) -> Option<Pixmap> {
     let mut pm = Pixmap::new((w_in * ppi).round().max(1.0) as u32, (h_in * ppi).round().max(1.0) as u32)?;
     pm.fill(color(panel.background, 1.0));
-    draw_pattern(&mut pm, panel.pattern, panel.pattern_color, ppi);
+    draw_pattern(&mut pm, panel.pattern, panel.pattern_color, ppi * panel.pattern_scale.clamp(0.25, 4.0));
     Some(pm)
+}
+
+// ------------------------------------------------------------ line styles
+
+/// How lines and outlines can be drawn (`Item::line_style`).
+pub const LINE_STYLES: [&str; 9] = ["Solid", "Dashed", "Long dashes", "Dotted", "Dash and dot", "Double", "Wavy", "Zigzag", "Scribble"];
+
+/// Extra room (in line widths) a style needs past the line itself.
+pub fn line_style_reach(style: u8) -> f32 {
+    match style {
+        5 => 1.5,
+        6..=8 => 3.0,
+        _ => 1.0,
+    }
+}
+
+fn polyline(pts: &[(f32, f32)], closed: bool) -> Option<tiny_skia::Path> {
+    let mut pb = PathBuilder::new();
+    let (x0, y0) = *pts.first()?;
+    pb.move_to(x0, y0);
+    for (x, y) in &pts[1..] {
+        pb.line_to(*x, *y);
+    }
+    if closed {
+        pb.close();
+    }
+    pb.finish()
+}
+
+/// Points every `step` along the outline (corners kept), with the distance
+/// travelled and the direction there.
+fn walk(pts: &[(f32, f32)], closed: bool, step: f32) -> Vec<((f32, f32), f32, (f32, f32))> {
+    let mut seq: Vec<(f32, f32)> = pts.to_vec();
+    if closed && let Some(f) = pts.first() {
+        seq.push(*f);
+    }
+    let mut out = Vec::new();
+    let mut dist = 0.0;
+    for win in seq.windows(2) {
+        let (a, b) = (win[0], win[1]);
+        let len = (b.0 - a.0).hypot(b.1 - a.1);
+        if len < 1e-3 {
+            continue;
+        }
+        let dir = ((b.0 - a.0) / len, (b.1 - a.1) / len);
+        let n = (len / step).ceil().max(1.0) as usize;
+        for k in 0..n {
+            let t = k as f32 / n as f32;
+            out.push(((a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t), dist + len * t, dir));
+        }
+        dist += len;
+    }
+    if !closed && let Some(l) = seq.last() {
+        let dir = out.last().map(|o| o.2).unwrap_or((1.0, 0.0));
+        out.push((*l, dist, dir));
+    }
+    out
+}
+
+/// Stroke an outline (`closed`) or a line in one of the LINE_STYLES.
+/// `width` is in pixels; 0 draws nothing.
+pub fn styled_stroke(pm: &mut Pixmap, pts: &[(f32, f32)], closed: bool, style: u8, width: f32, c: Color) {
+    if width <= 0.0 || pts.len() < 2 {
+        return;
+    }
+    let paint = solid(c);
+    let cap = if closed { tiny_skia::LineCap::Butt } else { tiny_skia::LineCap::Round };
+    let mut st = Stroke { width, line_join: tiny_skia::LineJoin::Round, line_cap: cap, ..Default::default() };
+    let w = width.max(1.0);
+    match style {
+        1..=4 => {
+            let dash = match style {
+                1 => vec![w * 3.0, w * 2.0],
+                2 => vec![w * 7.0, w * 3.0],
+                3 => vec![0.01, w * 2.2],
+                _ => vec![w * 5.0, w * 2.0, 0.01, w * 2.0],
+            };
+            if style >= 3 {
+                st.line_cap = tiny_skia::LineCap::Round;
+            }
+            st.dash = tiny_skia::StrokeDash::new(dash, 0.0);
+            if let Some(p) = polyline(pts, closed) {
+                pm.stroke_path(&p, &paint, &st, Transform::identity(), None);
+            }
+        }
+        5 => {
+            // Two lines with a gap between: a wide stroke with its middle cleared.
+            if let (Some(p), Some(mut layer)) = (polyline(pts, closed), Pixmap::new(pm.width(), pm.height())) {
+                st.width = width * 1.6;
+                layer.stroke_path(&p, &paint, &st, Transform::identity(), None);
+                let mut clear = solid(c);
+                clear.blend_mode = tiny_skia::BlendMode::Clear;
+                st.width = width * 0.55;
+                layer.stroke_path(&p, &clear, &st, Transform::identity(), None);
+                pm.draw_pixmap(0, 0, layer.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+            }
+        }
+        6..=8 => {
+            let amp = (w * 1.4).max(2.0);
+            let period = (w * 7.0).max(12.0);
+            let along = walk(pts, closed, (period / 10.0).max(1.0));
+            let wave = |d: f32| match style {
+                6 => (d / period * std::f32::consts::TAU).sin(),
+                7 => {
+                    let t = (d / period).fract();
+                    if t < 0.5 { 4.0 * t - 1.0 } else { 3.0 - 4.0 * t }
+                }
+                _ => 0.0,
+            };
+            let passes: &[u32] = if style == 8 { &[1, 2] } else { &[0] };
+            for &seed in passes {
+                let moved: Vec<(f32, f32)> = along
+                    .iter()
+                    .enumerate()
+                    .map(|(i, ((x, y), d, (dx, dy)))| {
+                        // Scribble: a steady hand that wobbles a little, twice over.
+                        let off = if style == 8 {
+                            let r = ((i as u32).wrapping_mul(2654435761).wrapping_add(seed * 40503) >> 16) as f32 / 65535.0;
+                            (r - 0.5) * amp * 0.9 + (d / period * 2.1 + seed as f32).sin() * amp * 0.4
+                        } else {
+                            wave(*d) * amp
+                        };
+                        (x - dy * off, y + dx * off)
+                    })
+                    .collect();
+                st.width = if style == 8 { width * 0.7 } else { width };
+                st.line_cap = tiny_skia::LineCap::Round;
+                if let Some(p) = polyline(&moved, closed) {
+                    pm.stroke_path(&p, &paint, &st, Transform::identity(), None);
+                }
+            }
+        }
+        _ => {
+            if let Some(p) = polyline(pts, closed) {
+                pm.stroke_path(&p, &paint, &st, Transform::identity(), None);
+            }
+        }
+    }
+}
+
+// --------------------------------------------------------------- ornaments
+
+/// Decorative dividers and flourishes (`Content::Ornament`).
+pub const ORNAMENT_NAMES: [&str; 12] = [
+    "Swirl Flourish",
+    "Diamond Divider",
+    "Dotted Divider",
+    "Hearts Divider",
+    "Stars Divider",
+    "Leafy Vine",
+    "Scallop Underline",
+    "Brush Underline",
+    "Double Swoosh",
+    "Laurel",
+    "Arrow Flourish",
+    "Ribbon Banner",
+];
+
+/// A leaf from `a` to `b`, plump by `k` of its length.
+fn leaf(pb: &mut PathBuilder, a: (f32, f32), b: (f32, f32), k: f32) {
+    let (mx, my) = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+    let (nx, ny) = (-(b.1 - a.1) * k, (b.0 - a.0) * k);
+    pb.move_to(a.0, a.1);
+    pb.quad_to(mx + nx, my + ny, b.0, b.1);
+    pb.quad_to(mx - nx, my - ny, a.0, a.1);
+    pb.close();
+}
+
+fn shape_at(pb: &mut PathBuilder, o: Outline, cx: f32, cy: f32, s: f32) {
+    let pts = outline_points(o, s, s);
+    if let Some((x, y)) = pts.first() {
+        pb.move_to(cx - s / 2.0 + x, cy - s / 2.0 + y);
+    }
+    for (x, y) in &pts[1..] {
+        pb.line_to(cx - s / 2.0 + x, cy - s / 2.0 + y);
+    }
+    pb.close();
+}
+
+/// Draw an ornament in the box (x, y, w, h) in pixels.
+pub fn draw_ornament(pm: &mut Pixmap, style: u8, item: &Item, area: (f32, f32, f32, f32), ppi: f32) {
+    let (x, y, w, h) = area;
+    let ink = color(if item.stroke.is_clear() { Rgba::hex("#333333") } else { item.stroke }, item.tint);
+    let accent = color(if item.fill.is_clear() { if item.stroke.is_clear() { Rgba::hex("#333333") } else { item.stroke } } else { item.fill }, item.tint);
+    let lw = (item.stroke_pt / 72.0 * ppi).max(1.0);
+    let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+    let line = Stroke { width: lw, line_cap: tiny_skia::LineCap::Round, line_join: tiny_skia::LineJoin::Round, ..Default::default() };
+    let stroke = |pm: &mut Pixmap, pb: PathBuilder, st: &Stroke| {
+        if let Some(p) = pb.finish() {
+            pm.stroke_path(&p, &solid(ink), st, Transform::identity(), None);
+        }
+    };
+    let fill = |pm: &mut Pixmap, pb: PathBuilder, c: Color| {
+        if let Some(p) = pb.finish() {
+            pm.fill_path(&p, &solid(c), FillRule::Winding, Transform::identity(), None);
+        }
+    };
+    // A plain line from the ends towards the middle, stopping `gap` short.
+    let side_lines = |pm: &mut Pixmap, gap: f32| {
+        let mut pb = PathBuilder::new();
+        pb.move_to(x + lw, cy);
+        pb.line_to(cx - gap, cy);
+        pb.move_to(cx + gap, cy);
+        pb.line_to(x + w - lw, cy);
+        stroke(pm, pb, &line);
+    };
+    let s = h.min(w * 0.2);
+    match style {
+        0 => {
+            // Two mirrored swirls meeting at a diamond.
+            let mut pb = PathBuilder::new();
+            for dir in [-1.0f32, 1.0] {
+                let ex = cx + dir * w * 0.48;
+                pb.move_to(cx + dir * s * 0.45, cy);
+                pb.cubic_to(cx + dir * w * 0.18, cy - h * 0.45, cx + dir * w * 0.3, cy + h * 0.45, ex, cy);
+                // the curl at the end
+                pb.move_to(cx + dir * w * 0.3, cy + h * 0.05);
+                pb.cubic_to(cx + dir * w * 0.36, cy - h * 0.4, cx + dir * w * 0.22, cy - h * 0.42, cx + dir * w * 0.25, cy - h * 0.12);
+            }
+            stroke(pm, pb, &line);
+            let mut d = PathBuilder::new();
+            shape_at(&mut d, Outline::Diamond, cx, cy, s * 0.7);
+            fill(pm, d, accent);
+        }
+        1 => {
+            side_lines(pm, s * 0.9);
+            let mut d = PathBuilder::new();
+            shape_at(&mut d, Outline::Diamond, cx, cy, s * 0.8);
+            for k in [-1.0f32, 1.0] {
+                d.push_circle(cx + k * s * 0.65, cy, lw * 1.4);
+            }
+            fill(pm, d, accent);
+        }
+        2 => {
+            // Dots, biggest in the middle.
+            let n = ((w / (h.max(4.0) * 0.9)) as i32).clamp(5, 41) | 1;
+            let mut d = PathBuilder::new();
+            for i in 0..n {
+                let t = i as f32 / (n - 1) as f32;
+                let r = (h * 0.32) * (1.0 - (t - 0.5).abs() * 1.6).max(0.18);
+                d.push_circle(x + w * 0.02 + t * w * 0.96, cy, r);
+            }
+            fill(pm, d, accent);
+        }
+        3 | 4 => {
+            let o = if style == 3 { Outline::Heart } else { Outline::Star };
+            side_lines(pm, s * 1.7);
+            let mut d = PathBuilder::new();
+            for (k, size) in [(-1.0f32, 0.55), (0.0, 0.85), (1.0, 0.55)] {
+                shape_at(&mut d, o, cx + k * s * 0.95, cy, s * size);
+            }
+            fill(pm, d, accent);
+        }
+        5 => {
+            // A wavy stem with leaves on alternate sides.
+            let mut stem = PathBuilder::new();
+            let n = 6;
+            stem.move_to(x + lw, cy);
+            for i in 0..n {
+                let (x0, x1) = (x + w * i as f32 / n as f32, x + w * (i + 1) as f32 / n as f32);
+                let up = if i % 2 == 0 { -1.0 } else { 1.0 };
+                stem.quad_to((x0 + x1) / 2.0, cy + up * h * 0.3, x1.min(x + w - lw), cy);
+            }
+            stroke(pm, stem, &line);
+            let mut leaves = PathBuilder::new();
+            for i in 0..n * 2 {
+                let lx = x + w * (i as f32 + 0.5) / (n * 2) as f32;
+                let up = if i % 2 == 0 { -1.0 } else { 1.0 };
+                leaf(&mut leaves, (lx, cy), (lx + h * 0.35, cy + up * h * 0.42), 0.35);
+            }
+            fill(pm, leaves, accent);
+        }
+        6 => {
+            let n = ((w / h.max(4.0)) as i32).clamp(4, 40);
+            let r = w / n as f32 / 2.0;
+            let mut pb = PathBuilder::new();
+            pb.move_to(x, cy - r * 0.5);
+            for i in 0..n {
+                let x0 = x + i as f32 * 2.0 * r;
+                pb.quad_to(x0 + r, cy + r * 1.1, x0 + 2.0 * r, cy - r * 0.5);
+            }
+            stroke(pm, pb, &line);
+        }
+        7 => {
+            // A brush stroke: thick in the middle, tapering to points.
+            let mut pb = PathBuilder::new();
+            let t = h * 0.42;
+            pb.move_to(x, cy + h * 0.1);
+            pb.cubic_to(x + w * 0.3, cy - t, x + w * 0.7, cy - t * 0.9, x + w, cy - h * 0.05);
+            pb.cubic_to(x + w * 0.7, cy + t * 0.3, x + w * 0.3, cy + t * 0.5, x, cy + h * 0.1);
+            pb.close();
+            fill(pm, pb, accent);
+        }
+        8 => {
+            let mut pb = PathBuilder::new();
+            for k in [0.0f32, 1.0] {
+                let off = k * h * 0.28;
+                pb.move_to(x + w * 0.03, cy + off);
+                pb.cubic_to(x + w * 0.3, cy - h * 0.45 + off, x + w * 0.7, cy + h * 0.3 + off, x + w * 0.97, cy - h * 0.2 + off);
+            }
+            stroke(pm, pb, &line);
+        }
+        9 => {
+            // Two branches curving up from the middle, leaves along them.
+            let mut stems = PathBuilder::new();
+            let mut leaves = PathBuilder::new();
+            for dir in [-1.0f32, 1.0] {
+                let p0 = (cx, y + h * 0.9);
+                let p1 = (cx + dir * w * 0.48, y + h * 0.15);
+                stems.move_to(p0.0, p0.1);
+                stems.quad_to(cx + dir * w * 0.42, y + h * 0.95, p1.0, p1.1);
+                for k in 1..8 {
+                    let t = k as f32 / 8.0;
+                    let bx = (1.0 - t) * (1.0 - t) * p0.0 + 2.0 * (1.0 - t) * t * (cx + dir * w * 0.42) + t * t * p1.0;
+                    let by = (1.0 - t) * (1.0 - t) * p0.1 + 2.0 * (1.0 - t) * t * (y + h * 0.95) + t * t * p1.1;
+                    let l = h * 0.28;
+                    leaf(&mut leaves, (bx, by), (bx + dir * l * 0.6, by - l), 0.3);
+                    leaf(&mut leaves, (bx, by), (bx + dir * l, by + l * 0.15), 0.3);
+                }
+            }
+            stroke(pm, stems, &line);
+            fill(pm, leaves, accent);
+        }
+        10 => {
+            let mut pb = PathBuilder::new();
+            pb.move_to(x + w * 0.12, cy);
+            pb.line_to(x + w * 0.96, cy);
+            // the curl on the left
+            pb.move_to(x + w * 0.12, cy);
+            pb.cubic_to(x + w * 0.02, cy, x + w * 0.02, cy - h * 0.45, x + w * 0.08, cy - h * 0.4);
+            pb.cubic_to(x + w * 0.13, cy - h * 0.35, x + w * 0.1, cy - h * 0.15, x + w * 0.07, cy - h * 0.2);
+            stroke(pm, pb, &line);
+            let mut head = PathBuilder::new();
+            head.move_to(x + w, cy);
+            head.line_to(x + w - h * 0.6, cy - h * 0.32);
+            head.line_to(x + w - h * 0.45, cy);
+            head.line_to(x + w - h * 0.6, cy + h * 0.32);
+            head.close();
+            fill(pm, head, accent);
+        }
+        _ => {
+            // A ribbon banner with folded tails.
+            let (top, bot) = (y + h * 0.12, y + h * 0.72);
+            let mut tails = PathBuilder::new();
+            for dir in [-1.0f32, 1.0] {
+                let inner = cx + dir * w * 0.36;
+                let outer = cx + dir * w * 0.5;
+                tails.move_to(inner, top + h * 0.18);
+                tails.line_to(outer, top + h * 0.18);
+                tails.line_to(outer - dir * w * 0.05, (top + bot) / 2.0 + h * 0.18);
+                tails.line_to(outer, bot + h * 0.18);
+                tails.line_to(inner, bot + h * 0.18);
+                tails.close();
+            }
+            let mut shade = accent;
+            shade.apply_opacity(0.7);
+            fill(pm, tails, shade);
+            let mut band = PathBuilder::new();
+            band.move_to(x + w * 0.12, top);
+            band.line_to(x + w * 0.88, top);
+            band.line_to(x + w * 0.88, bot);
+            band.line_to(x + w * 0.12, bot);
+            band.close();
+            fill(pm, band, accent);
+        }
+    }
 }

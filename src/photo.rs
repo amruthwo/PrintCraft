@@ -23,8 +23,12 @@ pub enum Combine {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Adjust {
-    pub crop: [f32; 4], // left, top, right, bottom as fractions removed
+    /// Left, top, right, bottom: fractions trimmed off the turned picture.
+    pub crop: [f32; 4],
     pub shape: Option<Outline>,
+    /// Where the cut-out shape sits: left, top, right, bottom as fractions
+    /// of the cropped picture. The finished picture is trimmed to it.
+    pub shape_rect: [f32; 4],
     pub turns: u8,
     pub brightness: i32,
     pub contrast: f32,
@@ -44,6 +48,7 @@ impl Default for Adjust {
         Self {
             crop: [0.0; 4],
             shape: None,
+            shape_rect: [0.0, 0.0, 1.0, 1.0],
             turns: 0,
             brightness: 0,
             contrast: 0.0,
@@ -87,20 +92,75 @@ impl Effect {
     }
 }
 
-/// The picture after cropping and turning: what the selection tools work on.
-pub fn geometry(bytes: &[u8], a: &Adjust, max_side: u32) -> Option<RgbaImage> {
-    let mut img = image::load_from_memory(bytes).ok()?;
-    if img.width().max(img.height()) > max_side {
-        img = img.resize(max_side, max_side, image::imageops::FilterType::Triangle);
+/// Read a picture, made no larger than `max_side` (the editor works on a
+/// small copy so changes show at once; the finished picture uses a large one).
+pub fn load(bytes: &[u8], max_side: u32) -> Option<DynamicImage> {
+    let img = image::load_from_memory(bytes).ok()?;
+    Some(if img.width().max(img.height()) > max_side { img.resize(max_side, max_side, image::imageops::FilterType::Triangle) } else { img })
+}
+
+/// Turn, then trim: the picture the other changes and the selection tools
+/// work on.
+pub fn turn_and_crop(img: &DynamicImage, a: &Adjust) -> DynamicImage {
+    let mut img = img.clone();
+    for _ in 0..a.turns % 4 {
+        img = img.rotate90();
     }
     let (w, h) = img.dimensions();
     let (l, t) = ((a.crop[0] * w as f32) as u32, (a.crop[1] * h as f32) as u32);
     let (r, b) = ((a.crop[2] * w as f32) as u32, (a.crop[3] * h as f32) as u32);
-    img = img.crop_imm(l, t, w.saturating_sub(l + r).max(1), h.saturating_sub(t + b).max(1));
-    for _ in 0..a.turns % 4 {
-        img = img.rotate90();
+    img.crop_imm(l.min(w - 1), t.min(h - 1), w.saturating_sub(l + r).max(1), h.saturating_sub(t + b).max(1))
+}
+
+/// The picture after turning and cropping: what the selection tools work on.
+pub fn geometry(bytes: &[u8], a: &Adjust, max_side: u32) -> Option<RgbaImage> {
+    Some(turn_and_crop(&load(bytes, max_side)?, a).to_rgba8())
+}
+
+/// Turn the crop with the picture: a quarter turn clockwise moves what was
+/// trimmed off the bottom to the left, and so on.
+pub fn turn_crop_clockwise(c: [f32; 4]) -> [f32; 4] {
+    [c[3], c[0], c[1], c[2]]
+}
+
+/// What stays (255) and what is cut away (0), at the cropped picture's
+/// size: the selection and the cut-out shape together.
+pub fn keep_map(a: &Adjust, w: u32, h: u32) -> Vec<u8> {
+    let mut keep = vec![255u8; (w * h) as usize];
+    if let Some(m) = &a.mask
+        && let Some(g) = image::GrayImage::from_raw(m.w, m.h, m.data.clone())
+    {
+        let g = if (m.w, m.h) == (w, h) { g } else { image::imageops::resize(&g, w, h, image::imageops::FilterType::Triangle) };
+        keep.copy_from_slice(g.as_raw());
     }
-    Some(img.to_rgba8())
+    if let Some(shape) = a.shape {
+        let s = shape_alpha(shape, a.shape_rect, w, h);
+        for (k, v) in keep.iter_mut().zip(s) {
+            *k = ((*k as u16 * v as u16) / 255) as u8;
+        }
+    }
+    keep
+}
+
+/// The cut-out shape drawn into its box: one alpha byte per pixel.
+fn shape_alpha(shape: Outline, rect: [f32; 4], w: u32, h: u32) -> Vec<u8> {
+    let Some(mut m) = tiny_skia::Pixmap::new(w.max(1), h.max(1)) else { return vec![255; (w * h) as usize] };
+    let (x0, y0) = (rect[0] * w as f32, rect[1] * h as f32);
+    let (bw, bh) = (((rect[2] - rect[0]) * w as f32).max(1.0), ((rect[3] - rect[1]) * h as f32).max(1.0));
+    let pts = crate::raster::outline_points(shape, bw, bh);
+    let mut pb = tiny_skia::PathBuilder::new();
+    if let Some((x, y)) = pts.first() {
+        pb.move_to(x0 + x, y0 + y);
+    }
+    for (x, y) in &pts[1..] {
+        pb.line_to(x0 + x, y0 + y);
+    }
+    pb.close();
+    if let Some(path) = pb.finish() {
+        let paint = tiny_skia::Paint { anti_alias: true, ..Default::default() };
+        m.fill_path(&path, &paint, tiny_skia::FillRule::Winding, tiny_skia::Transform::identity(), None);
+    }
+    m.data().chunks_exact(4).map(|p| p[3]).collect()
 }
 
 fn close(a: [u8; 4], b: [u8; 4], tol: f32) -> bool {
@@ -227,19 +287,13 @@ pub fn feather(m: &Mask, r: u32) -> Mask {
 }
 
 pub fn apply(bytes: &[u8], a: &Adjust, max_side: u32) -> Option<DynamicImage> {
-    let mut img = image::load_from_memory(bytes).ok()?;
-    if img.width().max(img.height()) > max_side {
-        img = img.resize(max_side, max_side, image::imageops::FilterType::Triangle);
-    }
-    let (w, h) = img.dimensions();
-    let (l, t) = ((a.crop[0] * w as f32) as u32, (a.crop[1] * h as f32) as u32);
-    let (r, b) = ((a.crop[2] * w as f32) as u32, (a.crop[3] * h as f32) as u32);
-    let cw = w.saturating_sub(l + r).max(1);
-    let ch = h.saturating_sub(t + b).max(1);
-    img = img.crop_imm(l, t, cw, ch);
-    for _ in 0..a.turns % 4 {
-        img = img.rotate90();
-    }
+    Some(apply_to(&load(bytes, max_side)?, a))
+}
+
+/// Every change in order: turn and crop, light, color, red eye, effect,
+/// then the cut-out (selection and shape), trimmed to the shape's box.
+pub fn apply_to(src: &DynamicImage, a: &Adjust) -> DynamicImage {
+    let mut img = turn_and_crop(src, a);
     if a.brightness != 0 {
         img = img.brighten(a.brightness);
     }
@@ -281,17 +335,23 @@ pub fn apply(bytes: &[u8], a: &Adjust, max_side: u32) -> Option<DynamicImage> {
         }
     }
     rgba = effect(rgba, a.effect);
-    if let Some(shape) = a.shape {
-        mask(&mut rgba, shape);
-    }
-    if let Some(m) = &a.mask {
-        let g = image::GrayImage::from_raw(m.w, m.h, m.data.clone())?;
-        let g = image::imageops::resize(&g, rgba.width(), rgba.height(), image::imageops::FilterType::Triangle);
-        for (p, k) in rgba.pixels_mut().zip(g.pixels()) {
-            p.0[3] = ((p.0[3] as u16 * k.0[0] as u16) / 255) as u8;
+    if a.mask.is_some() || a.shape.is_some() {
+        let (w, h) = rgba.dimensions();
+        for (p, k) in rgba.pixels_mut().zip(keep_map(a, w, h)) {
+            p.0[3] = ((p.0[3] as u16 * k as u16) / 255) as u8;
         }
     }
-    Some(DynamicImage::ImageRgba8(rgba))
+    if a.shape.is_some() {
+        // The finished picture is just the shape's box.
+        let (w, h) = rgba.dimensions();
+        let r = a.shape_rect;
+        let (x0, y0) = ((r[0].clamp(0.0, 1.0) * w as f32) as u32, (r[1].clamp(0.0, 1.0) * h as f32) as u32);
+        let (x1, y1) = ((r[2].clamp(0.0, 1.0) * w as f32).ceil() as u32, (r[3].clamp(0.0, 1.0) * h as f32).ceil() as u32);
+        if x1 > x0 && y1 > y0 {
+            rgba = image::imageops::crop_imm(&rgba, x0, y0, x1 - x0, y1 - y0).to_image();
+        }
+    }
+    DynamicImage::ImageRgba8(rgba)
 }
 
 fn effect(img: RgbaImage, e: Effect) -> RgbaImage {
@@ -323,28 +383,6 @@ fn effect(img: RgbaImage, e: Effect) -> RgbaImage {
         }
     }
     img
-}
-
-fn mask(img: &mut RgbaImage, shape: Outline) {
-    let (w, h) = img.dimensions();
-    let Some(mut m) = tiny_skia::Pixmap::new(w, h) else { return };
-    let pts = crate::raster::outline_points(shape, w as f32, h as f32);
-    let mut pb = tiny_skia::PathBuilder::new();
-    if let Some((x, y)) = pts.first() {
-        pb.move_to(*x, *y);
-    }
-    for (x, y) in &pts[1..] {
-        pb.line_to(*x, *y);
-    }
-    pb.close();
-    if let Some(path) = pb.finish() {
-        let paint = tiny_skia::Paint { anti_alias: true, ..Default::default() };
-        m.fill_path(&path, &paint, tiny_skia::FillRule::Winding, tiny_skia::Transform::identity(), None);
-    }
-    for (i, p) in img.pixels_mut().enumerate() {
-        let a = m.data()[i * 4 + 3] as u16;
-        p.0[3] = ((p.0[3] as u16 * a) / 255) as u8;
-    }
 }
 
 pub fn to_png(img: &DynamicImage) -> Vec<u8> {

@@ -309,7 +309,7 @@ pub fn show(ctx: &egui::Context, app: &mut App, d: &mut Dialog, acts: &mut Vec<A
                     });
                 });
                 ui.horizontal(|ui| {
-                    ui.add(egui::Slider::new(&mut s.size, 14.0..=72.0).text("Size"));
+                    crate::widgets::slider(ui, &mut s.size, 14.0..=72.0, |s| s.text("Size"));
                     crate::dialogs::color_row(ui, &mut app.settings, &mut app.eyedropper, "Ink", &mut s.color);
                 });
                 ui.label(RichText::new("More handwriting fonts: Online > Online Fonts (try Great Vibes, Pacifico, Satisfy or Allura).").weak().size(12.0));
@@ -341,6 +341,7 @@ fn settings(ctx: &egui::Context, app: &mut App, open: &mut bool) {
         let s = &mut app.settings;
         let mut changed = false;
         let mut refit = false;
+        let mut check_now = false;
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.heading("Look");
             ui.horizontal(|ui| {
@@ -378,13 +379,13 @@ fn settings(ctx: &egui::Context, app: &mut App, open: &mut bool) {
             changed |= ui.checkbox(&mut s.show_printable, "Show the printable area (dotted line)").changed();
             ui.horizontal(|ui| {
                 ui.label("Printer can't reach the outer");
-                changed |= ui.add(egui::DragValue::new(&mut s.printable_margin).range(0.0..=1.0).speed(0.01).suffix(" in")).changed();
+                changed |= crate::widgets::number(ui, &mut s.printable_margin, 0.0..=1.0, 0.01, |d| d.speed(0.01).suffix(" in")).changed();
                 ui.label("of the paper");
             });
             ui.label(RichText::new("Not sure? Print a test page from the Print window.").weak().size(12.0));
             ui.add_space(8.0);
             ui.heading("Snapping");
-            changed |= ui.add(egui::Slider::new(&mut s.snap_strength, 0.0..=20.0).text("How strongly things line up (0 = off)")).changed();
+            changed |= crate::widgets::slider(ui, &mut s.snap_strength, 0.0..=20.0, |s| s.text("How strongly things line up (0 = off)")).changed();
             changed |= ui.checkbox(&mut s.snap_grid, "Also snap to ruler marks (1/16 inch)").changed();
             changed |= ui.checkbox(&mut s.show_guides, "Show guidelines (click a ruler to add one; they never print)").changed();
             ui.label(RichText::new("Hold Alt while dragging to move freely.").weak().size(12.0));
@@ -392,12 +393,12 @@ fn settings(ctx: &egui::Context, app: &mut App, open: &mut bool) {
             ui.heading("Safety");
             ui.horizontal(|ui| {
                 ui.label("Save a safety copy every");
-                changed |= ui.add(egui::DragValue::new(&mut s.autosave_minutes).range(1..=30)).changed();
+                changed |= crate::widgets::number(ui, &mut s.autosave_minutes, 1..=30, 1.0, |d| d).changed();
                 ui.label("minutes");
             });
             ui.horizontal(|ui| {
                 ui.label("Undo can go back");
-                changed |= ui.add(egui::DragValue::new(&mut s.undo_steps).range(crate::effects::UNDO_MINIMUM..=500)).changed();
+                changed |= crate::widgets::number(ui, &mut s.undo_steps, crate::effects::UNDO_MINIMUM..=500, 1.0, |d| d).changed();
                 ui.label("steps");
             });
             ui.add_space(8.0);
@@ -407,6 +408,15 @@ fn settings(ctx: &egui::Context, app: &mut App, open: &mut bool) {
             });
             if ui.button("Open My Art Folder").on_hover_text("Rename, delete or add pictures there").clicked() {
                 crate::library::open_folder();
+            }
+            if !crate::platform::WEB {
+                ui.add_space(8.0);
+                ui.heading("Updates");
+                ui.label(format!("You have PrintCraft {}.", crate::update::current_version()));
+                changed |= ui.checkbox(&mut s.check_updates, "Look for a new version once a day").changed();
+                if ui.button("Check Now").clicked() {
+                    check_now = true;
+                }
             }
             ui.add_space(8.0);
             ui.heading("AI pictures");
@@ -430,6 +440,10 @@ fn settings(ctx: &egui::Context, app: &mut App, open: &mut bool) {
         if refit {
             app.fit_pending = true;
         }
+        if check_now {
+            let st = crate::update::UpdateState::checking(ctx);
+            app.dialogs.push(Dialog::Update(Box::new(st)));
+        }
     });
 }
 
@@ -442,8 +456,8 @@ fn borders(ctx: &egui::Context, app: &mut App, b: &mut BorderState, open: &mut b
             redo |= crate::dialogs::color_row(ui, &mut app.settings, &mut app.eyedropper, "Main color", &mut b.line);
             redo |= crate::dialogs::color_row(ui, &mut app.settings, &mut app.eyedropper, "Second color", &mut b.fill);
         });
-        redo |= ui.add(egui::Slider::new(&mut b.thickness, 6.0..=60.0).text("Thickness (points)")).changed();
-        ui.add(egui::Slider::new(&mut b.inset, 0.0..=1.0).text("Distance from the paper edge (in)"));
+        redo |= crate::widgets::slider(ui, &mut b.thickness, 6.0..=60.0, |s| s.text("Thickness (points)")).changed();
+        crate::widgets::slider(ui, &mut b.inset, 0.0..=1.0, |s| s.text("Distance from the paper edge (in)"));
         if redo {
             b.previews = crate::raster::BORDER_NAMES
                 .iter()
@@ -649,6 +663,39 @@ fn print_window(ctx: &egui::Context, app: &mut App, p: &mut PrintState, open: &m
                 ui.radio_value(&mut p.which, 2, "Sheets:");
                 ui.add_enabled(p.which == 2, egui::TextEdit::singleline(&mut p.range).hint_text("e.g. 1-2, 4").desired_width(100.0));
             });
+            if crate::merge::has_fields(&app.doc) {
+                ui.add_space(6.0);
+                ui.label(RichText::new("Address merge").strong());
+                if app.settings.contacts.is_empty() {
+                    ui.label(RichText::new("Add people in the Address Book to print one for each of them.").weak().size(12.0));
+                } else {
+                    ui.label(RichText::new("Print one for each person ticked:").weak().size(12.0));
+                    ui.horizontal(|ui| {
+                        if ui.small_button("Everyone").clicked() {
+                            p.opts.merge = app.settings.contacts.clone();
+                        }
+                        if ui.small_button("No one").clicked() {
+                            p.opts.merge.clear();
+                        }
+                    });
+                    egui::ScrollArea::vertical().id_salt("merge-people").max_height(130.0).show(ui, |ui| {
+                        for c in &app.settings.contacts {
+                            let mut on = p.opts.merge.contains(c);
+                            let name = if c.name.is_empty() { "(no name)" } else { c.name.as_str() };
+                            if ui.checkbox(&mut on, name).changed() {
+                                if on {
+                                    p.opts.merge.push(c.clone());
+                                } else {
+                                    p.opts.merge.retain(|m| m != c);
+                                }
+                            }
+                        }
+                    });
+                    if p.opts.merge.is_empty() {
+                        ui.label(RichText::new("No one ticked: the «fields» print as they are.").weak().size(12.0));
+                    }
+                }
+            }
             ui.add_space(6.0);
             ui.label(RichText::new("Quality").strong());
             ui.horizontal(|ui| {
@@ -682,12 +729,15 @@ fn print_window(ctx: &egui::Context, app: &mut App, p: &mut PrintState, open: &m
                 ui.checkbox(&mut p.opts.reverse, "Print the last sheet first");
                 ui.label("Line-up adjustment (if prints come out shifted):");
                 ui.horizontal(|ui| {
-                    ui.add(egui::DragValue::new(&mut p.opts.nudge.0).range(-0.5..=0.5).speed(0.01).prefix("Right ").suffix(" in"));
-                    ui.add(egui::DragValue::new(&mut p.opts.nudge.1).range(-0.5..=0.5).speed(0.01).prefix("Down ").suffix(" in"));
+                    crate::widgets::number(ui, &mut p.opts.nudge.0, -0.5..=0.5, 0.01, |d| d.speed(0.01).prefix("Right ").suffix(" in"));
+                    crate::widgets::number(ui, &mut p.opts.nudge.1, -0.5..=0.5, 0.01, |d| d.speed(0.01).prefix("Down ").suffix(" in"));
                 });
             });
             if matches!(app.doc.kind, crate::kinds::Kind::CardHalf | crate::kinds::Kind::NoteCard) && !p.opts.two_sided {
                 ui.label(RichText::new("Tip: after the first sheet prints, put it back in blank side up for the inside.").weak().size(12.0));
+            }
+            if app.doc.kind == crate::kinds::Kind::NoteCard {
+                ui.label(RichText::new("Two cards print on each sheet: cut it in half, then fold each card.").weak().size(12.0));
             }
             ui.add_space(10.0);
             ui.horizontal(|ui| {

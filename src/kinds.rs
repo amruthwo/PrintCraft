@@ -87,6 +87,18 @@ impl Kind {
         }
     }
 
+    /// How a sheet of paper becomes this kind's page, for kinds whose size
+    /// comes from the paper (see Page Setup). `None` for kinds sized by
+    /// something else: label and card sheets, envelopes, banners.
+    pub fn paper_use(self) -> Option<PaperUse> {
+        match self {
+            Kind::Sign | Kind::Letterhead | Kind::Newsletter | Kind::FaxCover | Kind::Sticker | Kind::IronOn | Kind::Calendar | Kind::Certificate | Kind::Brochure | Kind::Scrapbook => Some(PaperUse::Whole),
+            Kind::CardQuarter => Some(PaperUse::Quarter),
+            Kind::CardHalf => Some(PaperUse::Half),
+            _ => None,
+        }
+    }
+
     pub fn default_landscape(self) -> bool {
         let (w, h) = self.size();
         w > h
@@ -175,7 +187,57 @@ struct Sheet {
 }
 
 const LETTER: (f32, f32) = (8.5, 11.0);
-const A4: (f32, f32) = (8.26805, 11.6931);
+
+/// How a sheet of paper becomes a page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaperUse {
+    /// The page is the whole sheet.
+    Whole,
+    /// Folded in half twice: each panel is a quarter of the sheet.
+    Quarter,
+    /// Folded in half once: each panel is half the sheet.
+    Half,
+}
+
+/// Paper sizes offered in Page Setup and New Project: name, then width and
+/// height in inches (upright).
+pub const PAPERS: [(&str, f32, f32); 11] = [
+    ("Letter (8½ × 11 in)", 8.5, 11.0),
+    ("Legal (8½ × 14 in)", 8.5, 14.0),
+    ("Tabloid (11 × 17 in)", 11.0, 17.0),
+    ("Half Letter (5½ × 8½ in)", 5.5, 8.5),
+    ("A4 (210 × 297 mm)", 210.0 / 25.4, 297.0 / 25.4),
+    ("A5 (148 × 210 mm)", 148.0 / 25.4, 210.0 / 25.4),
+    ("A3 (297 × 420 mm)", 297.0 / 25.4, 420.0 / 25.4),
+    ("Photo 4 × 6 in", 4.0, 6.0),
+    ("Photo 5 × 7 in", 5.0, 7.0),
+    ("Photo 8 × 10 in", 8.0, 10.0),
+    ("Scrapbook 12 × 12 in", 12.0, 12.0),
+];
+
+/// The page (or card panel) a sheet of paper makes. `paper` is upright or
+/// not, it doesn't matter; `landscape` is the page's own direction.
+pub fn page_for_paper(kind: Kind, paper: (f32, f32), landscape: bool) -> (f32, f32) {
+    let (s, l) = (paper.0.min(paper.1), paper.0.max(paper.1));
+    match kind.paper_use() {
+        Some(PaperUse::Quarter) => {
+            if landscape { (l / 2.0, s / 2.0) } else { (s / 2.0, l / 2.0) }
+        }
+        Some(PaperUse::Half) => {
+            if landscape { (s, l / 2.0) } else { (l / 2.0, s) }
+        }
+        _ => {
+            if landscape { (l, s) } else { (s, l) }
+        }
+    }
+}
+
+/// Which of `PAPERS` a sheet is, if any.
+pub fn paper_index(paper: (f32, f32)) -> Option<usize> {
+    let (s, l) = (paper.0.min(paper.1), paper.0.max(paper.1));
+    PAPERS.iter().position(|(_, w, h)| (w.min(*h) - s).abs() < 0.02 && (w.max(*h) - l).abs() < 0.02)
+}
+const A4: (f32, f32) = (210.0 / 25.4, 297.0 / 25.4);
 
 #[allow(clippy::too_many_arguments)]
 const fn sheet(label: &'static str, w: f32, h: f32, cols: u32, rows: u32, left: f32, top: f32, step_x: f32, step_y: f32, corner: f32) -> Sheet {
@@ -281,3 +343,25 @@ pub const ENVELOPES: [(&str, f32, f32); 15] = [
     ("C6 (162 × 114 mm)", 6.37795, 4.48819),
     ("C65 (229 × 114 mm)", 9.01575, 4.48819),
 ];
+
+#[cfg(test)]
+mod paper_tests {
+    use super::*;
+
+    #[test]
+    fn letter_gives_the_usual_pages() {
+        let letter = (PAPERS[0].1, PAPERS[0].2);
+        assert_eq!(page_for_paper(Kind::Sign, letter, false), (8.5, 11.0));
+        assert_eq!(page_for_paper(Kind::Certificate, letter, true), (11.0, 8.5));
+        assert_eq!(page_for_paper(Kind::CardQuarter, letter, false), (4.25, 5.5));
+        assert_eq!(page_for_paper(Kind::CardHalf, letter, false), (5.5, 8.5));
+        assert_eq!(page_for_paper(Kind::CardHalf, letter, true), (8.5, 5.5));
+    }
+
+    #[test]
+    fn papers_are_found_either_way_round() {
+        assert_eq!(paper_index((14.0, 8.5)), Some(1));
+        assert_eq!(paper_index((210.0 / 25.4, 297.0 / 25.4)), Some(4));
+        assert_eq!(paper_index((7.0, 9.0)), None);
+    }
+}

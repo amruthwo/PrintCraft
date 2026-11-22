@@ -57,7 +57,17 @@ pub enum Act {
     ToggleRulers,
     Panel(usize),
     ToggleLook,
+    PageSetup,
+    /// The Flourishes & Dividers window.
+    Ornaments,
+    CalendarMaker,
+    /// Swap the selected picture for another, keeping its place and effects.
+    ReplacePicture,
+    CheckUpdates,
+    Report,
     Gallery(u8),
+    /// Search Google Images for these words straight away.
+    SearchPictures(String),
     PictureFromFile,
     Headline,
     TextBox,
@@ -205,6 +215,11 @@ pub struct App {
     pub screenshot: Option<(PathBuf, u32)>,
     pub fill_color: Rgba,
     pub line_color: Rgba,
+    /// Color for new words (the toolbar's Text color button).
+    pub text_color: Rgba,
+    /// Line thickness (points) and style for new shapes and lines.
+    pub line_pt: f32,
+    pub line_style: u8,
     pub quit: bool,
     /// Snap guides being shown: (vertical?, position in inches).
     pub guides: Vec<(bool, f32)>,
@@ -230,6 +245,20 @@ pub struct App {
     pub guide_drag: Option<GuideDrag>,
     /// Scroll this page into view on the next frame (every-page view).
     pub scroll_to: Option<usize>,
+    /// Words typed in the Pictures search box on the side bar.
+    pub picture_words: String,
+    /// Text that came with the last paste (browser version).
+    pub pasted_text: Option<String>,
+    /// The daily update check running in the background.
+    pub update_job: Option<crate::update::Slot>,
+    /// Opening the problem report: 2 = wait a frame for menus to close,
+    /// 1 = picture of the window taken, open the form next.
+    pub report_stage: u8,
+    pub report_shot: std::sync::Arc<std::sync::Mutex<Option<eframe::egui::ColorImage>>>,
+    /// Replace Picture: the next picture added goes into this item instead.
+    pub replace_target: Option<u64>,
+    /// Small pictures of the ready-made designs, made when first shown.
+    pub design_thumbs: HashMap<String, egui::TextureHandle>,
 }
 
 /// Marker put on the system clipboard when copying items inside PrintCraft,
@@ -247,8 +276,11 @@ impl App {
             settings.legacy_pages = std::env::var("PRINTCRAFT_PAGES").is_ok_and(|v| v == "legacy");
             settings.tile_pages = std::env::var("PRINTCRAFT_PAGES").is_ok_and(|v| v == "tiled");
             settings.show_guides = true;
+            settings.modern = std::env::var("PRINTCRAFT_LAYOUT").is_ok_and(|v| v == "modern");
         }
         theme::apply(ctx, settings.look);
+        // Ctrl + and Ctrl − zoom the page (see main.rs), not the buttons and menus.
+        ctx.options_mut(|o| o.zoom_with_keyboard = false);
         ctx.set_fonts(crate::fonts::base_definitions());
         let mut app = Self {
             doc: Project::new(Kind::Sign, false),
@@ -279,6 +311,9 @@ impl App {
             screenshot: screenshot.map(|p| (p, 0)),
             fill_color: Rgba::hex("#2f8fd8"),
             line_color: Rgba::BLACK,
+            text_color: Rgba::BLACK,
+            line_pt: 1.5,
+            line_style: 0,
             quit: false,
             guides: Vec::new(),
             tabs: Vec::new(),
@@ -297,11 +332,28 @@ impl App {
             guide_sel: None,
             guide_drag: None,
             scroll_to: None,
+            picture_words: String::new(),
+            pasted_text: None,
+            update_job: None,
+            report_stage: 0,
+            report_shot: Default::default(),
+            replace_target: None,
+            design_thumbs: HashMap::new(),
         };
         app.tabs.push(app.stash());
         app.rescan_library();
         if app.screenshot.is_some() {
-            app.doc = if std::env::var("PRINTCRAFT_SAMPLE").is_ok_and(|v| v == "card") { crate::sample::card() } else { crate::sample::poster() };
+            app.doc = match std::env::var("PRINTCRAFT_SAMPLE").as_deref() {
+                Ok("card") => crate::sample::card(),
+                Ok("lines") => crate::sample::lines(),
+                Ok("calendar") => {
+                    let mut p = Project::new(Kind::Calendar, true);
+                    let o = crate::calendar::CalendarOptions { year: 2027, month: 12, months: 1, ..Default::default() };
+                    crate::calendar::fill(&mut p, &o, &[(12, 8, "Ann".into())]);
+                    p
+                }
+                _ => crate::sample::poster(),
+            };
             if let Some(id) = app.doc.panels[0].items.get(2).map(|i| i.id) {
                 app.selected = vec![id];
             }
@@ -309,11 +361,55 @@ impl App {
             if std::env::var("PRINTCRAFT_OPEN").is_ok_and(|v| v == "google") {
                 app.dialogs.push(Dialog::gallery(1));
             }
+            // Other windows to check: PRINTCRAFT_OPEN=pagesetup, report, update.
+            match std::env::var("PRINTCRAFT_OPEN").as_deref() {
+                Ok("pagesetup") => {
+                    let d = Dialog::page_setup(&app);
+                    app.dialogs.push(d);
+                }
+                Ok("report") => {
+                    let st = crate::report::ReportState::new(&app);
+                    app.dialogs.push(Dialog::Report(Box::new(st)));
+                }
+                Ok("update") => app.dialogs.push(Dialog::Update(Box::new(crate::update::UpdateState::checking(ctx)))),
+                Ok("new") => app.dialogs.push(Dialog::new_project()),
+                Ok("new-calendar") => {
+                    let mut d = Dialog::new_project();
+                    if let Dialog::NewProject { kind, landscape, .. } = &mut d {
+                        *kind = Kind::Calendar;
+                        *landscape = true;
+                    }
+                    app.dialogs.push(d);
+                }
+                _ => {}
+            }
+            // PRINTCRAFT_OPEN=photo:<tool tab>[:<cut-out tool>] opens the Photo
+            // Editor on a made-up photo; cut-out tools 0 and 2 start with a
+            // heart shape or a magic-wand pick to show.
+            if let Ok(v) = std::env::var("PRINTCRAFT_OPEN")
+                && let Some(rest) = v.strip_prefix("photo")
+            {
+                let mut parts = rest.split(':').filter(|s| !s.is_empty()).map(|s| s.parse::<u8>().unwrap_or(0));
+                let (tab, tool) = (parts.next().unwrap_or(0), parts.next());
+                app.add_picture_bytes("Test photo", crate::sample::test_photo(), "", ctx);
+                if let Some(it) = app.first_selected()
+                    && let Content::Picture { asset } = it.content
+                {
+                    let mut st = crate::photo_editor::PhotoState::new(it.id, asset, tab);
+                    if let Some(t) = tool {
+                        st.preset_for_check(t);
+                    }
+                    app.dialogs.push(Dialog::Photo(Box::new(st)));
+                }
+            }
         } else if let Some(p) = open {
             // A design or older project opens; a picture goes on the page.
             app.add_file(p, ctx);
         } else {
             app.dialogs.push(Dialog::welcome());
+        }
+        if app.screenshot.is_none() && crate::update::due(&app.settings) {
+            app.update_job = Some(crate::update::check(ctx));
         }
         if app.screenshot.is_none() {
             let left = crate::recovery::leftovers();
@@ -336,6 +432,35 @@ impl App {
             let _ = tx.send(Library::scan(&folders));
         });
         self.library_job = Some(rx);
+    }
+
+    /// The daily update check: offer a new version when one turns up.
+    pub fn poll_update(&mut self) {
+        let Some(job) = &self.update_job else { return };
+        let Some(stage) = job.lock().unwrap().take() else { return };
+        self.update_job = None;
+        match stage {
+            crate::update::Stage::Available(r) if r.version != self.settings.skip_version => {
+                self.settings.last_update_check = crate::platform::now_ms();
+                self.settings.save();
+                self.dialogs.push(Dialog::Update(Box::new(crate::update::UpdateState::found(r))));
+            }
+            crate::update::Stage::Failed(_) => {}
+            _ => {
+                self.settings.last_update_check = crate::platform::now_ms();
+                self.settings.save();
+            }
+        }
+    }
+
+    /// Replace Picture waits for a new picture only while the old one stays
+    /// selected; clicking something else calls it off.
+    pub fn check_replace_target(&mut self) {
+        if let Some(t) = self.replace_target
+            && !self.selected.contains(&t)
+        {
+            self.replace_target = None;
+        }
     }
 
     pub fn poll_library(&mut self) {
@@ -385,7 +510,21 @@ impl App {
     /// text. Returns false when PrintCraft's own copied items should paste.
     fn paste_external(&mut self, ctx: &egui::Context) -> bool {
         if crate::platform::WEB {
-            return false;
+            // The browser hands over text with the paste itself (pictures come
+            // through platform::take_picked). Words copied elsewhere become a
+            // text box; PrintCraft's own mark means its copied items.
+            let Some(t) = self.pasted_text.take() else { return false };
+            if t == COPY_MARK || t.trim().is_empty() || !self.clipboard.is_empty() {
+                return false;
+            }
+            if t.trim().starts_with("http") && !t.trim().contains(char::is_whitespace) {
+                self.notify("To bring in a picture from another site, right-click it and choose Copy Image (not Copy Image Address), then paste here.", ctx);
+                return true;
+            }
+            let look = TextLook { size: 16.0, ..Default::default() };
+            let lines = t.lines().count().max(1) as f32;
+            self.add_item(4.0, (lines * 0.3).clamp(0.5, 6.0), Content::Text { text: t, look, shape: None, fit: false, runs: Vec::new() });
+            return true;
         }
         if let Some(t) = crate::platform::clipboard_text() {
             if t == COPY_MARK {
@@ -615,6 +754,35 @@ impl App {
         self.dirty = true;
     }
 
+    /// Google Images in one step: PrintCraft's own Google window on the
+    /// desktop (picks go straight onto the page), a new tab in the browser
+    /// version (paste or drop a picture in), or the web browser with the
+    /// Pictures window watching for a copied picture.
+    pub fn search_pictures(&mut self, words: &str, ctx: &egui::Context) {
+        let url = crate::dialogs::google_images_url(words, 0, false, false);
+        self.online.web_words = words.trim().to_string();
+        self.online.web_keep = false;
+        if crate::platform::WEB {
+            crate::platform::open_url(&url);
+            self.web_search_hint(ctx);
+            return;
+        }
+        match self.online.google_window(&url, ctx) {
+            Ok(()) => self.google_window_hint(ctx),
+            Err(_) => self.dialogs.push(Dialog::google_in_browser(words)),
+        }
+    }
+
+    pub fn google_window_hint(&mut self, _ctx: &egui::Context) {
+        self.toast = Some(("Google Images is open in its own window. Point at a picture and click \"+ Add to my project\". Add as many as you like, then close that window.".into(), f64::MAX));
+        self.toast_until_click = true;
+    }
+
+    pub fn web_search_hint(&mut self, _ctx: &egui::Context) {
+        self.toast = Some(("Google Images opened in a new tab. Right-click a picture, choose Copy Image, then come back here and press Ctrl+V. You can also drag a picture onto your page.".into(), f64::MAX));
+        self.toast_until_click = true;
+    }
+
     pub fn notify(&mut self, msg: impl Into<String>, ctx: &egui::Context) {
         self.toast = Some((msg.into(), ctx.input(|i| i.time) + 4.0));
     }
@@ -642,6 +810,30 @@ impl App {
             self.notify("That picture couldn't be opened.", ctx);
             return;
         };
+        // Replace Picture: the new picture takes the old one's place, fitted
+        // inside its box and keeping its shadow, frame, turn and so on.
+        if let Some(target) = self.replace_target.take()
+            && self.item(target).is_some_and(|i| matches!(i.content, Content::Picture { .. }))
+        {
+            let aspect = pm.width() as f32 / pm.height().max(1) as f32;
+            let bytes = if bytes.starts_with(&[0xD7, 0xCD, 0xC6, 0x9A]) {
+                let rgba = crate::raster::pixmap_to_rgba(&pm);
+                image::RgbaImage::from_raw(pm.width(), pm.height(), rgba).map(|i| crate::photo::to_png(&image::DynamicImage::ImageRgba8(i))).unwrap_or(bytes)
+            } else {
+                bytes
+            };
+            self.checkpoint();
+            let asset = self.doc.add_asset(name, bytes, credit);
+            if let Some(it) = self.item_mut(target) {
+                let f = it.frame;
+                let (w, h) = if f.w / f.h.max(0.01) > aspect { (f.h * aspect, f.h) } else { (f.w, f.w / aspect) };
+                it.frame = Frame::new(f.x + (f.w - w) / 2.0, f.y + (f.h - h) / 2.0, w, h);
+                it.content = Content::Picture { asset };
+            }
+            self.selected = vec![target];
+            self.notify("Picture replaced.", ctx);
+            return;
+        }
         let aspect = pm.width() as f32 / pm.height().max(1) as f32;
         let side = (self.doc.width.min(self.doc.height) * 0.45).max(1.0);
         let (w, h) = if aspect >= 1.0 { (side, side / aspect) } else { (side * aspect, side) };
@@ -806,10 +998,10 @@ impl App {
             Act::Undo => !self.undo.is_empty(),
             Act::Redo => !self.redo.is_empty(),
             Act::Paste => true,
-            Act::Photo(_) => matches!(sel.map(|i| &i.content), Some(Content::Picture { .. })),
+            Act::Photo(_) | Act::ReplacePicture => matches!(sel.map(|i| &i.content), Some(Content::Picture { .. })),
+            Act::CalendarMaker => self.doc.kind == Kind::Calendar,
             Act::TextShape | Act::SpeechBubble | Act::StretchText => matches!(sel.map(|i| &i.content), Some(Content::Text { .. })),
             Act::Bold | Act::Italic | Act::Underline | Act::Align(_) | Act::VAlign(_) => self.editing.is_some() || sel.is_some_and(|i| i.look().is_some()),
-            Act::AddressMerge => !self.settings.contacts.is_empty(),
             Act::Group | Act::Distribute(_) => self.selected.len() >= 2,
             Act::Ungroup => matches!(sel.map(|i| &i.content), Some(Content::Group { .. })),
             Act::FitText => matches!(sel.map(|i| &i.content), Some(Content::Text { .. })),
@@ -818,6 +1010,24 @@ impl App {
             a if Self::needs_selection(a) => sel.is_some(),
             _ => true,
         }
+    }
+
+    /// Why a tool can't be used right now, in words that say what to do.
+    pub fn why_disabled(&self, act: &Act) -> Option<&'static str> {
+        if self.enabled(act) {
+            return None;
+        }
+        Some(match act {
+            Act::Undo => "Nothing to undo yet",
+            Act::CalendarMaker => "Start a calendar first: New Project, then Calendar",
+            Act::Redo => "Nothing to redo",
+            Act::Photo(_) | Act::SaveToMyArt | Act::ReplacePicture => "Click a picture on the page first",
+            Act::TextShape | Act::SpeechBubble | Act::StretchText | Act::FitText => "Click a text box on the page first",
+            Act::Bold | Act::Italic | Act::Underline | Act::Align(_) | Act::VAlign(_) => "Click some text on the page first",
+            Act::Group | Act::Distribute(_) => "Select two or more things first: drag across them, or hold Shift and click each one",
+            Act::Ungroup => "Click a group first (things that were grouped together)",
+            _ => "Click something on the page first",
+        })
     }
 
     pub fn run(&mut self, act: Act, ctx: &egui::Context) {
@@ -864,9 +1074,7 @@ impl App {
             }
             Act::Copy | Act::Cut => {
                 self.clipboard = self.page().items.iter().filter(|i| self.selected.contains(&i.id)).cloned().collect();
-                if !crate::platform::WEB {
-                    crate::platform::set_clipboard_text(ctx, COPY_MARK);
-                }
+                crate::platform::set_clipboard_text(ctx, COPY_MARK);
                 if act == Act::Cut {
                     self.run(Act::Delete, ctx);
                 }
@@ -920,18 +1128,37 @@ impl App {
                 let next = if self.settings.look == Look::Light { Look::Dark } else { Look::Light };
                 self.set_look(ctx, next);
             }
+            Act::CheckUpdates => {
+                let st = crate::update::UpdateState::checking(ctx);
+                self.dialogs.push(Dialog::Update(Box::new(st)));
+            }
+            // A picture of the window is taken first (see main.rs), then the form opens.
+            Act::Report => self.report_stage = 2,
+            Act::ReplacePicture => {
+                if let Some(id) = self.selected.first().copied() {
+                    self.replace_target = Some(id);
+                    self.dialogs.push(Dialog::ReplacePicture);
+                }
+            }
+            Act::CalendarMaker => self.dialogs.push(Dialog::CalendarMaker(Box::default())),
+            Act::Ornaments => self.dialogs.push(Dialog::Ornaments),
+            Act::PageSetup => {
+                let d = Dialog::page_setup(self);
+                self.dialogs.push(d);
+            }
             Act::Gallery(tab) => self.dialogs.push(Dialog::gallery(tab)),
+            Act::SearchPictures(words) => self.search_pictures(&words, ctx),
             Act::PictureFromFile => {
                 crate::platform::pick_file(Want::Picture, "Pictures", &["png", "jpg", "jpeg", "bmp", "gif", "wmf"], ctx);
             }
             Act::Headline => self.dialogs.push(Dialog::headline(None, self)),
             Act::TextBox => {
-                let look = TextLook { size: 18.0, ..Default::default() };
+                let look = TextLook { size: 18.0, color: self.text_color, ..Default::default() };
                 let id = self.add_item(3.5, 1.2, Content::Text { text: String::new(), look, shape: None, fit: false, runs: Vec::new() });
                 self.editing = Some((id, String::new()));
             }
             Act::TextInShape => {
-                let look = TextLook { size: 16.0, align: Align::Center, valign: VAlign::Middle, ..Default::default() };
+                let look = TextLook { size: 16.0, align: Align::Center, valign: VAlign::Middle, color: self.text_color, ..Default::default() };
                 let id = self.add_item(3.0, 2.2, Content::Text { text: "Your words here".into(), look, shape: Some(Outline::Ellipse), fit: false, runs: Vec::new() });
                 if let Some(it) = self.item_mut(id) {
                     it.fill = Rgba::hex("#fff4c2");
@@ -953,19 +1180,23 @@ impl App {
             Act::Shape(o) => {
                 let fill = self.fill_color;
                 let stroke = self.line_color;
+                let (pt, style) = (self.line_pt, self.line_style);
                 let id = self.add_item(2.0, 2.0, Content::Shape { outline: o });
                 if let Some(it) = self.item_mut(id) {
                     it.fill = fill;
                     it.stroke = stroke;
-                    it.stroke_pt = 1.5;
+                    it.stroke_pt = pt;
+                    it.line_style = style;
                 }
             }
             Act::Line => {
                 let c = self.line_color;
-                let id = self.add_item(3.0, 0.02, Content::Line);
+                let (pt, style) = (self.line_pt.max(0.5), self.line_style);
+                let id = self.add_item(3.0, 0.2, Content::Line);
                 if let Some(it) = self.item_mut(id) {
                     it.stroke = c;
-                    it.stroke_pt = crate::effects::FRAME_MEDIUM * 72.0;
+                    it.stroke_pt = pt;
+                    it.line_style = style;
                 }
             }
             Act::Seal => {

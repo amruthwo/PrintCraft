@@ -85,6 +85,15 @@ pub struct Settings {
     /// Show the guidelines placed from the rulers.
     #[serde(default = "yes")]
     pub show_guides: bool,
+    /// Look for a new version on GitHub once a day.
+    #[serde(default = "yes")]
+    pub check_updates: bool,
+    /// When that last happened (milliseconds since 1970).
+    #[serde(default)]
+    pub last_update_check: u64,
+    /// A version the person chose to skip.
+    #[serde(default)]
+    pub skip_version: String,
 }
 
 fn undo_default() -> usize {
@@ -127,6 +136,9 @@ impl Default for Settings {
             legacy_pages: false,
             tile_pages: false,
             show_guides: true,
+            check_updates: true,
+            last_update_check: 0,
+            skip_version: String::new(),
         }
     }
 }

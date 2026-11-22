@@ -36,14 +36,25 @@ never come. If PrintCraft is close to what you need, fork it and make it your ow
 * **Fonts**: every font on your computer, two bundled open fonts, and free online fonts from
   [Fontsource](https://fontsource.org/) with previews. Use the arrow keys in the font list to try fonts on your
   text as you go.
-* **Pictures**: from a file, by pasting or dropping them in, from Google Images (searched in a PrintCraft window:
-  click **+ Add to my project** on any picture), from art collections you already own (`.CDT` packs), from your
-  own **My Art** folder, or drawn by AI from a description (optional; uses your own free Google Gemini or OpenAI
-  key).
-* **Photo Editor**: crop and turn, color and recolor, brightness and sharpness, red-eye fix, photo effects, and
-  cut-outs by shape, by your own outline, with a magic wand or with automatic background removal.
-* **Design tools**: shapes, lines, 16 page borders, page color, drop shadows, glows, frames, tint and
-  see-through, groups, align and space evenly, snapping, ruler guidelines and a printable-area guide.
+* **Pictures**: type what you want in the search box under **Pictures** and press Enter: Google Images opens in a
+  PrintCraft window, and every picture you click **+ Add to my project** on goes straight onto your page. Or paste
+  (Ctrl+V) or drop pictures in, use a file, your own **My Art** folder, art collections you already own (`.CDT`
+  packs), or a picture drawn by AI from a description (optional; uses your own free Google Gemini or OpenAI key).
+* **Photo Editor**: crop with a box you drag on the photo, turn, color and recolor, light and focus, red-eye fix,
+  effects picked from previews of your own photo, and cut-outs: a shape you move and stretch with handles, a magic
+  wand, drawing around something, picking a color, or automatic background removal. The parts that will be cut
+  away show faded, so you can keep picking more. Undo, Start Over and Hold to Compare are always at hand.
+* **Design tools**: shapes, lines, 16 page borders, flourishes and dividers, page color and patterns (with an
+  adjustable size), drop shadows, glows, frames, tint and see-through, groups, align and space evenly, snapping,
+  ruler guidelines and a printable-area guide. Lines and outlines can be any thickness (or none) and solid, dashed,
+  dotted, double, wavy, zigzag or scribbled. Drag things from one page to another.
+* **Ready-made designs** for cards, signs, certificates, banners, labels, envelopes, business cards, letterheads,
+  newsletters, postcards and scrapbook pages, shown next to Blank in New Project.
+* **Calendars that fill in their dates**, one page per month, with holidays and birthdays from the address book.
+* **Address merge**: put «Name» or «Address» on a label or envelope, then print one for each person you tick.
+* **Replace Picture** swaps a picture while keeping its place, size and effects.
+* **Any paper size**: File > Page Setup offers Letter, Legal, Tabloid, A3, A4, A5, photo sizes or your own size,
+  tall or wide, and can scale your design to fit.
 * **Printing that knows the project**: folded cards come out the right way up, banners tile across sheets,
   labels and business cards fill standard sheets (common US letter and A4 stock), with a print preview, copies,
   page ranges, two-sided printing, cut marks and a printer test page.
@@ -52,6 +63,10 @@ never come. If PrintCraft is close to what you need, fork it and make it your ow
 * **Saves** as a PrintCraft design (`.pcraft`), PDF, PNG, JPEG or BMP.
 * Classic and Modern layouts, light and dark looks (or follow the computer), project tabs, an address book with
   birthday reminders, searchable help, and autosave with crash recovery.
+* **Keeps itself up to date**: once a day (or from Help > Check for Updates) PrintCraft looks for a new version
+  and offers to download and install the same kind of package you have.
+* **Report a problem or suggest an idea** from the Help menu: a short form that opens a GitHub issue with the
+  details already filled in and gathers a picture of the window to attach.
 
 <details>
 <summary>The dark look, with a three-panel greeting card</summary>
@@ -98,7 +113,8 @@ the search opens in your web browser instead, and PrintCraft picks up pictures y
 6. **Save.** *File > Save* (Ctrl+S) keeps a `.pcraft` design you can change later. *Save as PDF* makes a copy to
    email or print anywhere.
 
-Press **F1** (or use the search box at the top, Ctrl+K) to find any tool, setting or help topic.
+Press **F1** (or use the search box at the top, Ctrl+K) to find any tool, setting or help topic. Sliders follow
+the mouse wheel or trackpad, and the arrow keys once you've clicked them.
 
 ### Keyboard shortcuts
 
@@ -115,8 +131,8 @@ Press **F1** (or use the search box at the top, Ctrl+K) to find any tool, settin
 | Ctrl+A | Select everything on the page |
 | Arrow keys | Nudge the selection (1/16 inch) |
 | Delete | Remove the selection |
-| + / − | Zoom in / out |
-| Ctrl+F | Fit the page in the window |
+| Ctrl + / Ctrl − (or + / −) | Zoom the page in / out |
+| Ctrl+0 or Ctrl+F | Fit the page in the window |
 | Ctrl+K | Search tools, settings and help |
 | F1 | Help |
 
@@ -129,9 +145,9 @@ pictures and the fonts used, and lays them out in order down the page for you to
 can't be read yet). *Edit > Project Notes* lists what came across. PrintCraft can't save in those formats; save
 your work as a `.pcraft` design.
 
-If you own `.CDT` art and photo collections, point PrintCraft at the folders that hold them in
-*Online > My Content Packs* (desktop only). Their pictures then show up under *Pictures > Insert Art from Content
-Packs*, searchable by name. Nothing is copied; PrintCraft reads them where they are.
+If you own `.CDT` art and photo collections, open the **Content Packs** tab of the Pictures window (Insert >
+From Content Packs) and add the folders that hold them (desktop only). Their pictures then show up there,
+searchable by name. Nothing is copied; PrintCraft reads them where they are.
 
 [docs/FORMATS.md](docs/FORMATS.md) describes what is known about these formats. Help in decoding more of them is
 very welcome.
@@ -176,8 +192,8 @@ printcraft --screenshot out.png                # picture of the window with a sa
 
 ## Roadmap
 
-Tables, calendars that fill in their own dates, mail merge onto labels and envelopes, mixed styles inside one text
-box, ready-made designs, and exact placement when opening older projects. See [docs/ROADMAP.md](docs/ROADMAP.md).
+Tables, mixed styles inside one text box, more ready-made designs, and exact placement when opening older
+projects. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Licence
 

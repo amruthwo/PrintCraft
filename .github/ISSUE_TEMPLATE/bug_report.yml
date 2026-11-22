@@ -1,4 +1,5 @@
 # Bug report form. PrintCraft is a hobby project: replies may be slow (see the README).
+# PrintCraft's "Report a Problem or Suggest an Idea" window fills it in (field ids must match src/report.rs).
 name: Bug report
 description: Something in PrintCraft doesn't work as expected
 labels: ["bug"]

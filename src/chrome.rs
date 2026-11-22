@@ -32,7 +32,6 @@ pub fn sections() -> Vec<Section> {
             title: "Pictures",
             icon: Icon::Picture,
             tools: vec![
-                ("Insert Art from Content Packs", Act::Gallery(0), "Choose art from your content packs"),
                 ("Search Google Images", Act::Gallery(1), "Find photos and clip art with Google Images"),
                 ("My Art", Act::MyArt, "Pictures you saved for reuse"),
                 ("Insert Picture from File", Act::PictureFromFile, "Use a photo from your computer"),
@@ -73,6 +72,7 @@ pub fn sections() -> Vec<Section> {
             icon: Icon::Seal,
             tools: vec![
                 ("Insert Seal", Act::Seal, "An award seal with your words"),
+                ("Flourishes & Dividers...", Act::Ornaments, "Swirls, dividers, vines and underlines to dress up a page"),
                 ("Insert Initial Capital", Act::InitialCap, "A large fancy first letter for a paragraph"),
                 ("Insert Number", Act::Number, "A number in a circle"),
                 ("Insert Signature...", Act::Signature, "Your name written in handwriting"),
@@ -83,6 +83,7 @@ pub fn sections() -> Vec<Section> {
             title: "Photo Tools",
             icon: Icon::Camera,
             tools: vec![
+                ("Replace Picture...", Act::ReplacePicture, "Swap the selected picture for another; it keeps its place, size and effects"),
                 ("Crop & Orientation", Act::Photo(0), "Trim or turn the selected photo"),
                 ("Adjust Color & Recolor", Act::Photo(1), "Richer, softer, warmer, or change its colors"),
                 ("Adjust Brightness & Focus", Act::Photo(2), "Lighten, darken or sharpen"),
@@ -111,6 +112,7 @@ pub fn sections() -> Vec<Section> {
             tools: vec![
                 ("Address Book", Act::AddressBook, "Names and addresses for envelopes and labels"),
                 ("Event Reminder", Act::Reminders, "Birthdays coming up"),
+                ("Calendar Maker", Act::CalendarMaker, "Fill a calendar with months, holidays and birthdays"),
                 ("Insert an Address", Act::AddressMerge, "Put an address on the page"),
             ],
         },
@@ -119,6 +121,7 @@ pub fn sections() -> Vec<Section> {
             icon: Icon::Flag,
             tools: vec![
                 ("Print...", Act::Print, "Print your project"),
+                ("Page Setup...", Act::PageSetup, "Paper size and direction"),
                 ("Print Preview", Act::PrintPreview, "See exactly how it will print"),
                 ("Save as PDF", Act::SavePdf, "Save a PDF to email or print elsewhere"),
                 ("Save as Picture", Act::ExportPicture, "Save a PNG or JPEG picture"),
@@ -130,7 +133,6 @@ pub fn sections() -> Vec<Section> {
             tools: vec![
                 ("Google Images", Act::Gallery(1), "Find photos and clip art with Google Images"),
                 ("Online Fonts", Act::GetFonts, "Add free fonts"),
-                ("My Content Packs", Act::ContentPacks, "Use art collections you own"),
                 ("AI Pictures", Act::AiPictures, "Make pictures from a description"),
             ],
         },
@@ -186,7 +188,11 @@ pub fn search_index() -> Vec<(String, Act, &'static str)> {
 
 fn item(ui: &mut egui::Ui, app: &mut App, label: &str, act: Act, out: &mut Option<Act>) {
     let on = app.enabled(&act);
-    if ui.add_enabled(on, egui::Button::new(label)).clicked() {
+    let mut r = ui.add_enabled(on, egui::Button::new(label));
+    if let Some(why) = app.why_disabled(&act) {
+        r = r.on_disabled_hover_text(why);
+    }
+    if r.clicked() {
         *out = Some(act);
         ui.close();
     }
@@ -203,6 +209,7 @@ fn menus(ui: &mut egui::Ui, app: &mut App, out: &mut Option<Act>) {
         item(ui, app, "Save as PDF...", Act::SavePdf, out);
         item(ui, app, "Export As Picture...", Act::ExportPicture, out);
         ui.separator();
+        item(ui, app, "Page Setup...", Act::PageSetup, out);
         item(ui, app, "Print Preview", Act::PrintPreview, out);
         item(ui, app, "Print...          Ctrl+P", Act::Print, out);
         ui.separator();
@@ -267,9 +274,12 @@ fn menus(ui: &mut egui::Ui, app: &mut App, out: &mut Option<Act>) {
         }
     });
     ui.menu_button("Insert", |ui| {
-        item(ui, app, "From Content Packs...", Act::Gallery(0), out);
         item(ui, app, "From Google Images...", Act::Gallery(1), out);
+        item(ui, app, "Flourish or Divider...", Act::Ornaments, out);
         item(ui, app, "From My Art...", Act::MyArt, out);
+        if !crate::platform::WEB {
+            item(ui, app, "From Content Packs...", Act::Gallery(0), out);
+        }
         item(ui, app, "From File...", Act::PictureFromFile, out);
         item(ui, app, "AI Picture...", Act::AiPictures, out);
         ui.separator();
@@ -374,6 +384,7 @@ fn menus(ui: &mut egui::Ui, app: &mut App, out: &mut Option<Act>) {
     ui.menu_button("Tools", |ui| {
         item(ui, app, "Address Book...", Act::AddressBook, out);
         item(ui, app, "Event Reminder...", Act::Reminders, out);
+        item(ui, app, "Calendar Maker...", Act::CalendarMaker, out);
         ui.separator();
         item(ui, app, "My Content Packs...", Act::ContentPacks, out);
         item(ui, app, "My Art...", Act::MyArt, out);
@@ -395,6 +406,12 @@ fn menus(ui: &mut egui::Ui, app: &mut App, out: &mut Option<Act>) {
     ui.menu_button("Help", |ui| {
         item(ui, app, "Help Topics...    F1", Act::HelpTopics, out);
         item(ui, app, "Getting Around", Act::Help, out);
+        ui.separator();
+        item(ui, app, "Report a Problem or Suggest an Idea...", Act::Report, out);
+        if !crate::platform::WEB {
+            item(ui, app, "Check for Updates...", Act::CheckUpdates, out);
+        }
+        ui.separator();
         item(ui, app, "About PrintCraft...", Act::About, out);
     });
 }
@@ -405,6 +422,17 @@ pub fn title_bar(ui: &mut egui::Ui, app: &mut App, icon: Option<&egui::TextureHa
     let mut out = None;
     let pal = theme::palette(app.settings.look);
     let bar = ui.max_rect();
+    // The whole bar moves the window. It is set up before the menus and
+    // buttons, so they still get their own clicks; anywhere else (the gap
+    // after the menus included) picks up the window.
+    let handle = ui.interact(bar, egui::Id::new("titlebar-move"), Sense::click_and_drag());
+    if handle.drag_started_by(egui::PointerButton::Primary) {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    }
+    if handle.double_clicked() {
+        let max = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
+    }
     ui.horizontal(|ui| {
         ui.set_height(30.0);
         if let Some(t) = icon {
@@ -443,20 +471,12 @@ pub fn title_bar(ui: &mut egui::Ui, app: &mut App, icon: Option<&egui::TextureHa
             }
             ui.add_space(6.0);
             search_box(ui, app, &mut out);
-            // Whatever is left is a handle to move the window.
+            // The project's name in whatever room is left.
             let free = ui.available_width().max(0.0);
-            let (drag_rect, drag) = ui.allocate_exact_size(vec2(free, 30.0), Sense::click_and_drag());
-            let title = app.title();
-            let galley = ui.painter().layout_no_wrap(title, egui::FontId::proportional(13.0), pal.muted);
-            if galley.size().x < drag_rect.width() {
-                ui.painter().galley(drag_rect.center() - galley.size() / 2.0, galley, pal.muted);
-            }
-            if drag.drag_started() {
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
-            }
-            if drag.double_clicked() {
-                let max = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
+            let (title_rect, _) = ui.allocate_exact_size(vec2(free, 30.0), Sense::hover());
+            let galley = ui.painter().layout_no_wrap(app.title(), egui::FontId::proportional(13.0), pal.muted);
+            if galley.size().x < title_rect.width() {
+                ui.painter().galley(title_rect.center() - galley.size() / 2.0, galley, pal.muted);
             }
         });
     });
@@ -514,7 +534,11 @@ pub fn standard_bar(ui: &mut egui::Ui, app: &mut App) -> Option<Act> {
     let mut out = None;
     ui.horizontal(|ui| {
         let b = |ui: &mut egui::Ui, app: &App, out: &mut Option<Act>, icon, tip: &str, act: Act| {
-            if icons::button(ui, icon, tip, app.enabled(&act)).clicked() {
+            let tip = match app.why_disabled(&act) {
+                Some(why) => format!("{tip}\n{why}"),
+                None => tip.to_string(),
+            };
+            if icons::button(ui, icon, &tip, app.enabled(&act)).clicked() {
                 *out = Some(act);
             }
         };
@@ -537,8 +561,10 @@ pub fn standard_bar(ui: &mut egui::Ui, app: &mut App) -> Option<Act> {
             }
         }
         ui.separator();
-        color_button(ui, app, true);
-        color_button(ui, app, false);
+        color_button(ui, app, Ink::Fill);
+        color_button(ui, app, Ink::Line);
+        color_button(ui, app, Ink::Text);
+        line_button(ui, app);
         tint_button(ui, app);
         ui.separator();
         b(ui, app, &mut out, Icon::Help, "Help (F1)", Act::HelpTopics);
@@ -549,36 +575,95 @@ pub fn standard_bar(ui: &mut egui::Ui, app: &mut App) -> Option<Act> {
     out
 }
 
-/// The color buttons; the popup is the shared color chooser.
-fn color_button(ui: &mut egui::Ui, app: &mut App, fill: bool) {
-    let current = if fill { app.fill_color } else { app.line_color };
-    let (rect, resp) = ui.allocate_exact_size(vec2(60.0, 28.0), Sense::click());
+/// Which color a toolbar color button sets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ink {
+    /// The inside of shapes, boxes and seals (a headline's second color).
+    Fill,
+    /// Outlines, lines and borders (a headline's edge).
+    Line,
+    /// Words.
+    Text,
+}
+
+impl Ink {
+    fn name(self) -> &'static str {
+        match self {
+            Ink::Fill => "Fill color",
+            Ink::Line => "Line color",
+            Ink::Text => "Text color",
+        }
+    }
+    fn tip(self) -> &'static str {
+        match self {
+            Ink::Fill => "Fill color: the inside of shapes, boxes and seals",
+            Ink::Line => "Line color: outlines, lines and borders",
+            Ink::Text => "Text color: the words (or just the selected words)",
+        }
+    }
+}
+
+/// The color the button shows: the selected item's own color when there is
+/// one, otherwise the color new things get.
+fn shown_color(app: &App, ink: Ink) -> Rgba {
+    let it = app.first_selected();
+    match ink {
+        Ink::Fill => match it.map(|i| (&i.content, i.fill)) {
+            Some((Content::Headline { second, .. }, _)) => *second,
+            Some((_, f)) => f,
+            None => app.fill_color,
+        },
+        Ink::Line => match it.map(|i| (&i.content, i.stroke)) {
+            Some((Content::Headline { outline, .. }, _)) => *outline,
+            Some((_, s)) => s,
+            None => app.line_color,
+        },
+        Ink::Text => it.and_then(|i| i.look().map(|l| l.color)).unwrap_or(app.text_color),
+    }
+}
+
+/// A color button: its icon with a bar of the color underneath (like a
+/// word processor's text color button). The popup is the shared chooser.
+pub fn color_button(ui: &mut egui::Ui, app: &mut App, ink: Ink) {
+    let current = shown_color(app, ink);
+    let (rect, resp) = ui.allocate_exact_size(vec2(34.0, 30.0), Sense::click());
     let v = ui.visuals().clone();
     if resp.hovered() {
         ui.painter().rect_filled(rect, 6.0, v.widgets.hovered.weak_bg_fill);
     }
-    let icon_r = egui::Rect::from_min_size(rect.min + vec2(3.0, 4.0), vec2(20.0, 20.0));
-    icons::paint(ui.painter(), icon_r, if fill { Icon::FillColor } else { Icon::LineColor }, v.text_color());
-    let sw = egui::Rect::from_min_max(egui::pos2(rect.left() + 26.0, rect.top() + 6.0), egui::pos2(rect.right() - 4.0, rect.bottom() - 6.0));
-    if current.is_clear() {
-        ui.painter().rect_stroke(sw, 3.0, Stroke::new(1.0, v.weak_text_color()), egui::StrokeKind::Inside);
-        ui.painter().line_segment([sw.left_bottom(), sw.right_top()], Stroke::new(1.0, Color32::RED));
-    } else {
-        ui.painter().rect_filled(sw, 3.0, colors::c32(current));
+    let icon_r = egui::Rect::from_center_size(rect.center_top() + vec2(0.0, 12.0), vec2(18.0, 18.0));
+    match ink {
+        Ink::Fill => icons::paint(ui.painter(), icon_r, Icon::FillColor, v.text_color()),
+        Ink::Line => icons::paint(ui.painter(), icon_r, Icon::LineColor, v.text_color()),
+        Ink::Text => {
+            ui.painter().text(icon_r.center() + vec2(0.0, 1.0), egui::Align2::CENTER_CENTER, "A", egui::FontId::proportional(18.0), v.text_color());
+        }
     }
-    let tip = if fill { "Fill color for the selected item" } else { "Line and text color for the selected item" };
-    let resp = resp.on_hover_text(tip);
+    let bar = egui::Rect::from_min_max(egui::pos2(rect.left() + 5.0, rect.bottom() - 7.0), egui::pos2(rect.right() - 5.0, rect.bottom() - 2.0));
+    if current.is_clear() {
+        ui.painter().rect_stroke(bar, 1.0, Stroke::new(1.0, v.weak_text_color()), egui::StrokeKind::Inside);
+        ui.painter().line_segment([bar.left_bottom(), bar.right_top()], Stroke::new(1.0, Color32::RED));
+    } else {
+        ui.painter().rect_filled(bar, 1.0, colors::c32(current));
+        ui.painter().rect_stroke(bar, 1.0, Stroke::new(0.5, v.weak_text_color()), egui::StrokeKind::Outside);
+    }
+    let resp = resp.on_hover_text(ink.tip());
     egui::Popup::from_toggle_button_response(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-        ui.label(RichText::new(if fill { "Fill color" } else { "Line and text color" }).size(15.0));
-        match colors::chooser(ui, if fill { "fill" } else { "line" }, current, &mut app.settings, true) {
+        ui.label(RichText::new(ink.name()).size(15.0));
+        let key = match ink {
+            Ink::Fill => "fill",
+            Ink::Line => "line",
+            Ink::Text => "text",
+        };
+        match colors::chooser(ui, key, current, &mut app.settings, true) {
             Some(Picked::Color(c, done)) => {
-                apply_color(app, fill, c);
+                apply_color(app, ink, c);
                 if done {
                     ui.close();
                 }
             }
             Some(Picked::Eyedropper) => {
-                app.eyedropper = Some(if fill { 0 } else { 1 });
+                app.eyedropper = Some(ink as u8);
                 ui.close();
             }
             None => {}
@@ -586,23 +671,122 @@ fn color_button(ui: &mut egui::Ui, app: &mut App, fill: bool) {
     });
 }
 
-/// Tint (fade toward white) and see-through, as one toolbar button.
-fn tint_button(ui: &mut egui::Ui, app: &mut App) {
-    let (tint, opacity) = app.first_selected().map(|i| (i.tint, i.opacity)).unwrap_or((1.0, 1.0));
-    let (rect, resp) = ui.allocate_exact_size(vec2(70.0, 28.0), Sense::click());
+/// Things a line thickness and style apply to.
+fn has_line(it: &Item) -> bool {
+    !matches!(it.content, Content::Headline { .. } | Content::Border { .. } | Content::Group { .. })
+}
+
+/// A small picture of a line style (white, tinted when drawn).
+fn line_style_texture(app: &mut App, ctx: &egui::Context, style: u8) -> Option<egui::TextureHandle> {
+    let key = format!("line-style-{style}");
+    if !app.design_thumbs.contains_key(&key) {
+        let mut pm = tiny_skia::Pixmap::new(132, 26)?;
+        crate::raster::styled_stroke(&mut pm, &[(10.0, 13.0), (122.0, 13.0)], false, style, 2.5, tiny_skia::Color::WHITE);
+        let tex = ctx.load_texture(&key, egui::ColorImage::from_rgba_premultiplied([132, 26], pm.data()), egui::TextureOptions::LINEAR);
+        app.design_thumbs.insert(key.clone(), tex);
+    }
+    app.design_thumbs.get(&key).cloned()
+}
+
+/// Line thickness and style for the selected shapes and lines (or for new
+/// ones when nothing is selected).
+pub fn line_button(ui: &mut egui::Ui, app: &mut App) {
+    let sel: Vec<(f32, u8)> = app.page().items.iter().filter(|i| app.selected.contains(&i.id) && has_line(i)).map(|i| (i.stroke_pt, i.line_style)).collect();
+    let (pt, style) = sel.first().copied().unwrap_or((app.line_pt, app.line_style));
+    let (rect, resp) = ui.allocate_exact_size(vec2(40.0, 30.0), Sense::click());
     let v = ui.visuals().clone();
     if resp.hovered() {
         ui.painter().rect_filled(rect, 6.0, v.widgets.hovered.weak_bg_fill);
     }
-    let bar = rect.shrink2(vec2(6.0, 8.0));
-    for i in 0..20 {
-        let t = i as f32 / 20.0;
-        let g = (40.0 + 215.0 * t) as u8;
-        let seg = egui::Rect::from_min_size(egui::pos2(bar.left() + bar.width() * t, bar.top()), vec2(bar.width() / 20.0 + 0.5, bar.height()));
-        ui.painter().rect_filled(seg, 0.0, Color32::from_gray(g));
+    for (k, wdt) in [0.8f32, 1.8, 3.4].iter().enumerate() {
+        let y = rect.top() + 8.0 + k as f32 * 7.0;
+        ui.painter().line_segment([egui::pos2(rect.left() + 7.0, y), egui::pos2(rect.right() - 7.0, y)], Stroke::new(*wdt, v.text_color()));
     }
-    ui.painter().rect_stroke(bar, 2.0, Stroke::new(1.0, v.weak_text_color()), egui::StrokeKind::Outside);
-    let resp = resp.on_hover_text("Tint and see-through for the selected item");
+    let resp = resp.on_hover_text("Line: thickness and style of outlines and lines (solid, dashed, dotted, double, wavy…)");
+    egui::Popup::from_toggle_button_response(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.set_min_width(300.0);
+        ui.label(RichText::new(if sel.is_empty() { "Line for new shapes and lines" } else { "Line" }).size(15.0));
+        let mut new_pt = pt;
+        let mut new_style = style;
+        let mut step = false;
+        ui.horizontal_wrapped(|ui| {
+            for (name, p) in [("None", 0.0), ("Hairline", 0.25), ("Thin", 1.0), ("Medium", 2.0), ("Thick", 4.0), ("Heavy", 8.0)] {
+                if ui.selectable_label((pt - p).abs() < 0.01, name).clicked() {
+                    new_pt = p;
+                    step = true;
+                }
+            }
+        });
+        let r = crate::widgets::slider(ui, &mut new_pt, 0.0..=24.0, |s| s.text("Thickness").suffix(" pt").fixed_decimals(2));
+        if r.drag_started() || (r.changed() && !r.dragged()) {
+            step = true;
+        }
+        ui.add_space(4.0);
+        ui.label(RichText::new("Style").strong());
+        egui::Grid::new("line-styles").spacing([6.0, 4.0]).show(ui, |ui| {
+            for (i, name) in crate::raster::LINE_STYLES.iter().enumerate() {
+                let tex = line_style_texture(app, ui.ctx(), i as u8);
+                let (r, resp) = ui.allocate_exact_size(vec2(140.0, 44.0), Sense::click());
+                let on = style == i as u8;
+                ui.painter().rect_filled(r, 6.0, if on { v.selection.bg_fill.gamma_multiply(0.35) } else if resp.hovered() { v.widgets.hovered.weak_bg_fill } else { v.widgets.inactive.weak_bg_fill });
+                if let Some(t) = tex {
+                    ui.painter().image(t.id(), egui::Rect::from_min_size(r.min + vec2(4.0, 3.0), vec2(132.0, 26.0)), egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), v.text_color());
+                }
+                ui.painter().text(r.center_bottom() - vec2(0.0, 3.0), egui::Align2::CENTER_BOTTOM, *name, egui::FontId::proportional(11.5), v.text_color());
+                if resp.clicked() {
+                    new_style = i as u8;
+                    step = true;
+                }
+                if i % 2 == 1 {
+                    ui.end_row();
+                }
+            }
+        });
+        if (new_pt - pt).abs() > 1e-4 || new_style != style {
+            if sel.is_empty() {
+                (app.line_pt, app.line_style) = (new_pt, new_style);
+            } else {
+                if step {
+                    app.checkpoint();
+                }
+                let ids = app.selected.clone();
+                let stroke = app.line_color;
+                for it in app.page_mut().items.iter_mut().filter(|i| ids.contains(&i.id) && has_line(i)) {
+                    it.stroke_pt = new_pt;
+                    it.line_style = new_style;
+                    // A thickness on something with no line color yet makes it show.
+                    if new_pt > 0.0 && it.stroke.is_clear() {
+                        it.stroke = stroke;
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Tint (fade toward white) and see-through, as one toolbar button.
+pub fn tint_button(ui: &mut egui::Ui, app: &mut App) {
+    let (tint, opacity) = app.first_selected().map(|i| (i.tint, i.opacity)).unwrap_or((1.0, 1.0));
+    let (rect, resp) = ui.allocate_exact_size(vec2(68.0, 30.0), Sense::click());
+    let v = ui.visuals().clone();
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 6.0, v.widgets.hovered.weak_bg_fill);
+    }
+    // A little checkerboard with a color fading across it, then the word "Fade".
+    let sw = egui::Rect::from_min_size(rect.left_center() + vec2(5.0, -9.0), vec2(18.0, 18.0));
+    for k in 0..9 {
+        let (cx, cy) = ((k % 3) as f32, (k / 3) as f32);
+        let cell = egui::Rect::from_min_size(sw.min + vec2(cx * 6.0, cy * 6.0), vec2(6.0, 6.0));
+        ui.painter().rect_filled(cell, 0.0, if (k % 2) == 0 { Color32::from_gray(205) } else { Color32::WHITE });
+    }
+    for i in 0..6 {
+        let t = i as f32 / 6.0;
+        let seg = egui::Rect::from_min_size(egui::pos2(sw.left() + sw.width() * t, sw.top()), vec2(sw.width() / 6.0 + 0.3, sw.height()));
+        ui.painter().rect_filled(seg, 0.0, Color32::from_rgb(58, 154, 217).gamma_multiply(1.0 - t));
+    }
+    ui.painter().rect_stroke(sw, 3.0, Stroke::new(1.0, v.weak_text_color()), egui::StrokeKind::Outside);
+    ui.painter().text(sw.right_center() + vec2(7.0, 0.0), egui::Align2::LEFT_CENTER, "Fade", egui::FontId::proportional(14.0), v.text_color());
+    let resp = resp.on_hover_text("Fade and see-through: lighten the selected item's colors, or let what's behind it show through");
     egui::Popup::from_toggle_button_response(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         ui.set_min_width(260.0);
         if app.selected.is_empty() {
@@ -611,10 +795,10 @@ fn tint_button(ui: &mut egui::Ui, app: &mut App) {
         }
         let mut t = tint * 100.0;
         let mut o = opacity * 100.0;
-        ui.label("Tint (fades colors toward white)");
-        let rt = ui.add(egui::Slider::new(&mut t, 10.0..=100.0).suffix("%").step_by(5.0));
+        ui.label("Fade (lightens the colors toward white)");
+        let rt = crate::widgets::slider(ui, &mut t, 10.0..=100.0, |s| s.suffix("%").step_by(5.0));
         ui.label("Solid ↔ see-through");
-        let ro = ui.add(egui::Slider::new(&mut o, 5.0..=100.0).suffix("% solid").step_by(5.0));
+        let ro = crate::widgets::slider(ui, &mut o, 5.0..=100.0, |s| s.suffix("% solid").step_by(5.0));
         if rt.drag_started() || ro.drag_started() || ((rt.changed() || ro.changed()) && !rt.dragged() && !ro.dragged()) {
             app.checkpoint();
         }
@@ -628,14 +812,16 @@ fn tint_button(ui: &mut egui::Ui, app: &mut App) {
     });
 }
 
-pub fn apply_color(app: &mut App, fill: bool, c: Rgba) {
-    if fill {
-        app.fill_color = c;
-    } else {
-        app.line_color = c;
-        // Selected words only, when some are selected.
-        if app.style_selection(&|s, _| s.color = Some(c)) {
-            return;
+pub fn apply_color(app: &mut App, ink: Ink, c: Rgba) {
+    match ink {
+        Ink::Fill => app.fill_color = c,
+        Ink::Line => app.line_color = c,
+        Ink::Text => {
+            app.text_color = c;
+            // Selected words only, when some are selected.
+            if app.style_selection(&|s, _| s.color = Some(c)) {
+                return;
+            }
         }
     }
     if app.selected.is_empty() {
@@ -644,14 +830,19 @@ pub fn apply_color(app: &mut App, fill: bool, c: Rgba) {
     app.checkpoint();
     let ids = app.selected.clone();
     for it in app.page_mut().items.iter_mut().filter(|i| ids.contains(&i.id)) {
-        match (&mut it.content, fill) {
-            (Content::Text { look, .. }, false) | (Content::Headline { look, .. }, false) => look.color = c,
-            (Content::Headline { second, .. }, true) => *second = c,
-            (_, true) => it.fill = c,
-            (_, false) => it.stroke = c,
-        }
-        if !fill && it.stroke_pt <= 0.0 {
-            it.stroke_pt = 1.0;
+        match (&mut it.content, ink) {
+            (Content::Headline { look, .. }, Ink::Text) => look.color = c,
+            (Content::Headline { second, .. }, Ink::Fill) => *second = c,
+            (Content::Headline { outline, .. }, Ink::Line) => *outline = c,
+            (Content::Text { look, .. }, Ink::Text) => look.color = c,
+            (_, Ink::Text) => {}
+            (_, Ink::Fill) => it.fill = c,
+            (_, Ink::Line) => {
+                it.stroke = c;
+                if it.stroke_pt <= 0.0 {
+                    it.stroke_pt = 1.0;
+                }
+            }
         }
     }
 }
@@ -887,6 +1078,17 @@ pub fn tool_panel(ui: &mut egui::Ui, app: &mut App) -> Option<Act> {
             }
             if open {
                 ui.add_space(2.0);
+                if sec.title == "Pictures" {
+                    // Search straight from here: one step to Google Images.
+                    ui.horizontal(|ui| {
+                        let edit = ui.add(egui::TextEdit::singleline(&mut app.picture_words).hint_text("Find pictures online…").desired_width(ui.available_width() - 34.0));
+                        let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if ui.button("🔍").on_hover_text("Search Google Images").clicked() || enter {
+                            out = Some(Act::SearchPictures(app.picture_words.clone()));
+                        }
+                    });
+                    ui.add_space(2.0);
+                }
                 for (label, act, tip) in sec.tools {
                     let on = app.enabled(&act);
                     let text = RichText::new(label).size(13.0).color(if on { pal.text } else { pal.muted.gamma_multiply(0.7) });
@@ -894,6 +1096,16 @@ pub fn tool_panel(ui: &mut egui::Ui, app: &mut App) -> Option<Act> {
                     if r.hovered() {
                         app.hint = tip.to_string();
                     }
+                    // Greyed out: say what to do first, here and in the status bar.
+                    if let Some(why) = app.why_disabled(&act)
+                        && r.contains_pointer()
+                    {
+                        app.hint = format!("{tip} — {why}.");
+                    }
+                    let r = match app.why_disabled(&act) {
+                        Some(why) => r.on_disabled_hover_text(why),
+                        None => r,
+                    };
                     if r.clicked() {
                         out = Some(act);
                     }
@@ -903,6 +1115,28 @@ pub fn tool_panel(ui: &mut egui::Ui, app: &mut App) -> Option<Act> {
             ui.add_space(4.0);
         }
     });
+    out
+}
+
+/// Every tool from the Classic tool panel, in its groups, as a plain list
+/// (the Modern layout's All Tools drawer). Built from the same `sections()`,
+/// so a tool added to one layout is in the other too.
+pub fn all_tools(ui: &mut egui::Ui, app: &mut App) -> Option<Act> {
+    let mut out = None;
+    for sec in sections() {
+        ui.add_space(4.0);
+        ui.label(RichText::new(sec.title).strong());
+        for (label, act, tip) in sec.tools {
+            let mut r = ui.add_enabled(app.enabled(&act), egui::Button::new(label).frame(false));
+            r = match app.why_disabled(&act) {
+                Some(why) => r.on_disabled_hover_text(why),
+                None => r.on_hover_text(tip),
+            };
+            if r.clicked() {
+                out = Some(act);
+            }
+        }
+    }
     out
 }
 
@@ -1060,7 +1294,9 @@ pub fn status_bar(ui: &mut egui::Ui, app: &mut App) -> Option<Act> {
         ui.label(RichText::new(hint).weak());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let size = format!("{:.2} × {:.2} in", app.doc.width, app.doc.height);
-            ui.label(RichText::new(size).weak());
+            if ui.add(egui::Button::new(RichText::new(size).weak()).frame(false)).on_hover_text("Page Setup: change the paper size").clicked() {
+                out = Some(Act::PageSetup);
+            }
             if app.doc.panels.len() > 1 {
                 ui.separator();
                 let name = app.page().name.clone();
