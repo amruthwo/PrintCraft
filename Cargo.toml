@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 description = "PrintCraft: make greeting cards, signs, banners, labels and more, then print them at home"
 readme = "README.md"
-homepage = "https://github.com/amruthwo/PrintCraft"
 repository = "https://github.com/amruthwo/PrintCraft"
 license = "GPL-3.0-or-later"
 keywords = ["print", "greeting-card", "banner", "label", "desktop-publishing"]
@@ -86,7 +85,9 @@ resources = []
 [package.metadata.packager.deb]
 depends = ["libgl1", "libxkbcommon0", "libwayland-client0", "libwebkit2gtk-4.1-0", "libgtk-3-0"]
 desktop-template = "packaging/linux/printcraft.desktop"
-files = { "packaging/linux/printcraft-mime.xml" = "usr/share/mime/packages/printcraft.xml", "packaging/linux/org.printcraft.PrintCraft.metainfo.xml" = "usr/share/metainfo/org.printcraft.PrintCraft.metainfo.xml" }
+# The desktop entry names its icon by the app id, so the icons are installed
+# under that name too (the AppImage is made from these files as well).
+files = { "packaging/linux/printcraft-mime.xml" = "usr/share/mime/packages/printcraft.xml", "packaging/linux/org.printcraft.PrintCraft.metainfo.xml" = "usr/share/metainfo/org.printcraft.PrintCraft.metainfo.xml", "packaging/icons/printcraft-16.png" = "usr/share/icons/hicolor/16x16/apps/org.printcraft.PrintCraft.png", "packaging/icons/printcraft-24.png" = "usr/share/icons/hicolor/24x24/apps/org.printcraft.PrintCraft.png", "packaging/icons/printcraft-32.png" = "usr/share/icons/hicolor/32x32/apps/org.printcraft.PrintCraft.png", "packaging/icons/printcraft-48.png" = "usr/share/icons/hicolor/48x48/apps/org.printcraft.PrintCraft.png", "packaging/icons/printcraft-64.png" = "usr/share/icons/hicolor/64x64/apps/org.printcraft.PrintCraft.png", "packaging/icons/printcraft-128.png" = "usr/share/icons/hicolor/128x128/apps/org.printcraft.PrintCraft.png", "packaging/icons/printcraft-256.png" = "usr/share/icons/hicolor/256x256/apps/org.printcraft.PrintCraft.png", "packaging/icons/printcraft-512.png" = "usr/share/icons/hicolor/512x512/apps/org.printcraft.PrintCraft.png" }
 
 [package.metadata.packager.appimage]
 bins = []
