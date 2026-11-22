@@ -1,0 +1,49 @@
+# Flatpak build:
+#   flatpak-builder --user --install-deps-from=flathub --install build-flatpak packaging/flatpak/org.printcraft.PrintCraft.yml
+# The GNOME runtime is used because it includes WebKitGTK, which the Google
+# Images window (printcraft-web) needs.
+# The build downloads crates (build-args --share=network), which is fine locally and on GitHub Actions.
+# Flathub doesn't allow that: for Flathub, vendor the sources with flatpak-cargo-generator and drop build-args.
+app-id: org.printcraft.PrintCraft
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: printcraft
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --share=network        # online fonts, Google Images, optional AI pictures
+  - --socket=cups          # printing
+  - --filesystem=xdg-documents
+  - --filesystem=xdg-download
+  - --filesystem=xdg-pictures   # My Art lives in Pictures/PrintCraft Art
+  - --filesystem=home:ro        # art collections and older projects wherever they are
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  build-args:
+    - --share=network
+  env:
+    CARGO_HOME: /run/build/printcraft/cargo
+modules:
+  - name: printcraft
+    buildsystem: simple
+    build-commands:
+      - cargo build --release --locked
+      - install -Dm755 target/release/printcraft /app/bin/printcraft
+      - install -Dm755 target/release/printcraft-web /app/bin/printcraft-web
+      - install -Dm644 packaging/linux/printcraft.desktop /app/share/applications/org.printcraft.PrintCraft.desktop
+      - install -Dm644 packaging/linux/org.printcraft.PrintCraft.metainfo.xml /app/share/metainfo/org.printcraft.PrintCraft.metainfo.xml
+      - install -Dm644 packaging/linux/printcraft-mime.xml /app/share/mime/packages/org.printcraft.PrintCraft.xml
+      - for n in 16 24 32 48 64 128 256 512; do install -Dm644 packaging/icons/printcraft-$n.png /app/share/icons/hicolor/${n}x${n}/apps/org.printcraft.PrintCraft.png; done
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - target
+          - dist
+          - build-flatpak
+          - .flatpak-builder

@@ -1,0 +1,14 @@
+{
+  "name": "PrintCraft",
+  "short_name": "PrintCraft",
+  "description": "Make greeting cards, signs, banners, labels and more, then print them at home.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#fbf6ec",
+  "theme_color": "#f4b34a",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

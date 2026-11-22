@@ -1,0 +1,209 @@
+# Builds PrintCraft for every platform and attaches the files to a GitHub release.
+# Runs on tags like v0.1.0, or by hand from the Actions tab (files are then only
+# kept as workflow artifacts).
+#
+# Every package holds two programs: printcraft (the app) and printcraft-web
+# (its Google Images window, which uses the computer's web engine).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-24.04, arch: x86_64 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm, arch: arm64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "${{ matrix.target }}" }
+      - name: Linux libraries
+        # libfuse2: the AppImage tools are themselves AppImages and need FUSE 2
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libxkbcommon-dev libfuse2t64
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Portable tarball
+        run: |
+          mkdir -p dist/printcraft
+          cp target/${{ matrix.target }}/release/printcraft target/${{ matrix.target }}/release/printcraft-web dist/printcraft/
+          cp README.md LICENSE THIRD-PARTY-NOTICES.md dist/printcraft/
+          tar -C dist -czf dist/printcraft-linux-${{ matrix.arch }}.tar.gz printcraft
+          rm -rf dist/printcraft
+      - name: .deb, .rpm, .AppImage
+        env:
+          # linuxdeploy's bundled strip is too old for current Rust binaries and quits without an error
+          NO_STRIP: "true"
+        run: |
+          cargo install cargo-packager cargo-generate-rpm --locked
+          cargo packager --release --formats deb,appimage --target ${{ matrix.target }} || true
+          cargo generate-rpm --target ${{ matrix.target }} -o dist/ || true
+          find target -maxdepth 4 \( -name '*.deb' -o -name '*.AppImage' -o -name '*.rpm' \) -exec cp -n {} dist/ \;
+      # files only: packaging leaves work folders (AppDirs) in dist/ that shouldn't be uploaded
+      - uses: actions/upload-artifact@v4
+        with:
+          name: "linux-${{ matrix.arch }}"
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
+            dist/*.AppImage
+
+  # Flatpak for x86_64 and arm64, built with the GNOME runtime (it includes WebKitGTK).
+  flatpak:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, arch: x86_64 }
+          - { os: ubuntu-24.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.os }}
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: printcraft-linux-${{ matrix.arch }}.flatpak
+          manifest-path: packaging/flatpak/org.printcraft.PrintCraft.yml
+          arch: ${{ matrix.arch }}
+          upload-artifact: false
+      - uses: actions/upload-artifact@v4
+        with:
+          name: "flatpak-${{ matrix.arch }}"
+          path: printcraft-linux-${{ matrix.arch }}.flatpak
+
+  windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-pc-windows-msvc, arch: x86_64, formats: "wix,nsis" }
+          # WiX 3 (.msi) can't build arm64 installers, so arm64 gets the NSIS setup .exe only
+          - { target: aarch64-pc-windows-msvc, arch: arm64, formats: "nsis" }
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "${{ matrix.target }}" }
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: .msi and setup .exe
+        run: |
+          cargo install cargo-packager --locked
+          cargo packager --release --formats ${{ matrix.formats }} --target ${{ matrix.target }}
+        continue-on-error: true
+      - name: Portable zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/PrintCraft | Out-Null
+          Copy-Item target/${{ matrix.target }}/release/printcraft.exe dist/PrintCraft/PrintCraft.exe
+          Copy-Item target/${{ matrix.target }}/release/printcraft-web.exe dist/PrintCraft/
+          Copy-Item README.md, LICENSE, THIRD-PARTY-NOTICES.md dist/PrintCraft/
+          Compress-Archive dist/PrintCraft dist/printcraft-windows-${{ matrix.arch }}-portable.zip
+          Remove-Item -Recurse dist/PrintCraft
+          # the packager already writes to dist/; only pick up installers left under target/
+          Get-ChildItem -Recurse -Include *.msi,*-setup.exe target -ErrorAction SilentlyContinue | Copy-Item -Destination dist -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: "windows-${{ matrix.arch }}"
+          path: |
+            dist/*.zip
+            dist/*.msi
+            dist/*-setup.exe
+
+  # One universal app (Apple Silicon + Intel), packed as .dmg and as a zipped .app.
+  macos:
+    runs-on: macos-latest
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "aarch64-apple-darwin,x86_64-apple-darwin" }
+      - run: cargo build --release --locked --target aarch64-apple-darwin
+      - run: cargo build --release --locked --target x86_64-apple-darwin
+      - name: Universal PrintCraft.app
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          APP=dist/PrintCraft.app
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          for BIN in printcraft printcraft-web; do
+            lipo -create -output "$APP/Contents/MacOS/$BIN" \
+              target/aarch64-apple-darwin/release/$BIN target/x86_64-apple-darwin/release/$BIN
+            lipo -info "$APP/Contents/MacOS/$BIN"
+          done
+          cp packaging/icons/printcraft.icns "$APP/Contents/Resources/printcraft.icns"
+          cat > "$APP/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleName</key><string>PrintCraft</string>
+            <key>CFBundleDisplayName</key><string>PrintCraft</string>
+            <key>CFBundleIdentifier</key><string>org.printcraft.PrintCraft</string>
+            <key>CFBundleExecutable</key><string>printcraft</string>
+            <key>CFBundleIconFile</key><string>printcraft.icns</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>$VERSION</string>
+            <key>CFBundleVersion</key><string>$VERSION</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>LSApplicationCategoryType</key><string>public.app-category.graphics-design</string>
+            <key>NSHighResolutionCapable</key><true/>
+            <key>CFBundleDocumentTypes</key><array><dict>
+              <key>CFBundleTypeName</key><string>PrintCraft design</string>
+              <key>CFBundleTypeExtensions</key><array><string>pcraft</string></array>
+              <key>CFBundleTypeRole</key><string>Editor</string>
+            </dict></array>
+          </dict></plist>
+          EOF
+          # ad-hoc signature so Apple Silicon will run it (not notarised: right-click > Open the first time)
+          codesign --force --deep --sign - "$APP"
+          hdiutil create -volname PrintCraft -srcfolder "$APP" -ov -format UDZO "dist/PrintCraft-$VERSION-macos-universal.dmg"
+          (cd dist && ditto -c -k --keepParent PrintCraft.app "PrintCraft-$VERSION-macos-universal.app.zip")
+          rm -rf "$APP"
+      - uses: actions/upload-artifact@v4
+        with: { name: "macos-universal", path: dist/* }
+
+  web:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: wasm32-unknown-unknown }
+      - run: cargo install trunk --locked
+      - run: trunk build --release --public-url ./ web/index.html --dist dist/web
+      - run: cd dist && zip -r printcraft-web.zip web
+      - uses: actions/upload-artifact@v4
+        with: { name: web, path: dist/printcraft-web.zip }
+
+  # Publishes whatever was built, even if some jobs failed (missing files can be uploaded by hand).
+  release:
+    needs: [linux, flatpak, windows, macos, web]
+    if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts }
+      # every file gets the same naming scheme (see the script)
+      - name: Standard file names
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "v$VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "::warning::Cargo.toml says $VERSION but the tag is $GITHUB_REF_NAME"
+          fi
+          bash .github/scripts/release-names.sh artifacts "$VERSION"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*

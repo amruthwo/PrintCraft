@@ -1,0 +1,43 @@
+# Build output (installers go on GitHub Releases, not in the repo)
+/target/
+/dist/
+**/*.rs.bk
+
+# Local cross-build tools (Zig, cargo-zigbuild; see scripts/build-windows.sh)
+/.tools/
+
+# Private test files: people's own projects, purchased art collections and
+# their index files. Never commit these.
+/corpus/
+*.sig
+*.SIG
+*.CDT
+*.cdt
+*.CDR
+*.IDT
+*.IDR
+*.KDR
+*.NDR
+*.TDT
+*.TDR
+*.BDT
+*.BDR
+*.LDT
+*.SD1
+*.SD2
+*.SPR
+
+# Scratch output from checks
+/shots/
+*.pdf
+
+# Editor and OS clutter
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local Flatpak builds
+/build-flatpak/
+/.flatpak-builder/
+/repo-flatpak/

@@ -1,0 +1,75 @@
+# Bug report form. PrintCraft is a hobby project: replies may be slow (see the README).
+name: Bug report
+description: Something in PrintCraft doesn't work as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! PrintCraft is a hobby project, so replies and fixes may be slow.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open ...
+        2. Click ...
+        3. See ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: PrintCraft version
+      description: Help > About PrintCraft
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Web browser
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: os_details
+    attributes:
+      label: OS version and CPU
+      placeholder: "Windows 11 on x86_64 / macOS 15 on Apple Silicon / Fedora 44 on arm64"
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it?
+      options:
+        - Windows installer (.msi / setup .exe)
+        - Portable .zip (Windows)
+        - macOS .dmg / .app
+        - .deb
+        - .rpm
+        - AppImage
+        - Portable .tar.gz (Linux)
+        - Built from source
+        - Web version
+  - type: input
+    id: printer
+    attributes:
+      label: Printer (if it's about printing)
+      placeholder: "HP OfficeJet 8015, Letter paper"
+  - type: textarea
+    id: files
+    attributes:
+      label: Screenshots or project files
+      description: Drag files here. Only share files you're allowed to share (no purchased clip art or other people's projects).

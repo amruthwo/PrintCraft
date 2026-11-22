@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.printcraft.PrintCraft</id>
+  <name>PrintCraft</name>
+  <summary>Make greeting cards, signs, banners and labels, then print them</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <url type="homepage">https://github.com/amruthwo/PrintCraft</url>
+  <url type="bugtracker">https://github.com/amruthwo/PrintCraft/issues</url>
+  <description>
+    <p>PrintCraft is a friendly home-publishing app for greeting cards, signs, banners, labels,
+    certificates, envelopes and more. It has a familiar layout with a tool panel, rulers and the
+    page in the middle, light and dark looks, text effects, a photo editor, and printing that lays
+    out folded cards, banners and label sheets for you.</p>
+  </description>
+  <launchable type="desktop-id">org.printcraft.PrintCraft.desktop</launchable>
+  <provides>
+    <binary>printcraft</binary>
+  </provides>
+  <categories>
+    <category>Graphics</category>
+    <category>Publishing</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+</component>

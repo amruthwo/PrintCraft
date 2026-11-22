@@ -1,0 +1,117 @@
+[package]
+name = "printcraft"
+version = "0.1.0"
+edition = "2024"
+description = "PrintCraft: make greeting cards, signs, banners, labels and more, then print them at home"
+readme = "README.md"
+homepage = "https://github.com/amruthwo/PrintCraft"
+repository = "https://github.com/amruthwo/PrintCraft"
+license = "GPL-3.0-or-later"
+keywords = ["print", "greeting-card", "banner", "label", "desktop-publishing"]
+categories = ["graphics", "gui"]
+default-run = "printcraft"
+
+[[bin]]
+name = "printcraft"
+path = "src/main.rs"
+
+# Companion window for Google Images search (the system web engine). Desktop only.
+[[bin]]
+name = "printcraft-web"
+path = "src/bin/printcraft-web.rs"
+
+[dependencies]
+eframe = "0.37.0"
+epaint_default_fonts = "0.37.0"
+image = { version = "0.25.10", default-features = false, features = ["bmp", "png", "jpeg", "gif"] }
+cfb = "0.15.0"
+flate2 = "1.1.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+tiny-skia = "0.11.4"
+ab_glyph = "0.2.32"
+ttf-parser = "0.25"
+pdf-writer = "0.12"
+
+# Desktop only: native file dialogs, HTTPS downloads, data folders, clipboard,
+# and the web engine for the Google Images window.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rfd = "0.17.2"
+ureq = { version = "2", features = ["json"] }
+directories = "6"
+arboard = { version = "3", features = ["wayland-data-control"] }
+tao = "0.37.3"
+wry = "0.57.3"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+winit = "0.30"
+
+# Browser build (`trunk build --release web/index.html`, see web/).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlCanvasElement", "HtmlElement", "HtmlInputElement", "HtmlAnchorElement", "FileList", "File", "Blob", "BlobPropertyBag", "Url", "Storage", "Location"] }
+log = "0.4"
+
+[build-dependencies]
+# Puts the icon and version details into the Windows .exe.
+winresource = "0.1"
+
+[profile.release]
+lto = "thin"
+opt-level = 3
+
+[profile.dev.package."*"]
+opt-level = 2
+
+# ---------------------------------------------------------------- packaging
+# Installers are made by `cargo packager --release` (cargo-packager): .deb,
+# .AppImage, .msi (WiX) and NSIS setup .exe. The macOS app is put together in
+# .github/workflows/release.yml so it can hold both processors.
+[package.metadata.packager]
+product-name = "PrintCraft"
+identifier = "org.printcraft.PrintCraft"
+category = "GraphicsAndDesign"
+description = "Make greeting cards, signs, banners, labels and more, then print them at home"
+authors = ["PrintCraft contributors"]
+before-packaging-command = "cargo build --release"
+out-dir = "dist"
+icons = ["packaging/icons/printcraft.png", "packaging/icons/printcraft.ico", "packaging/icons/printcraft.icns"]
+formats = ["deb", "appimage", "wix", "nsis"]
+binaries = [{ path = "printcraft", main = true }, { path = "printcraft-web", main = false }]
+resources = []
+
+[package.metadata.packager.deb]
+depends = ["libgl1", "libxkbcommon0", "libwayland-client0", "libwebkit2gtk-4.1-0", "libgtk-3-0"]
+desktop-template = "packaging/linux/printcraft.desktop"
+files = { "packaging/linux/printcraft-mime.xml" = "usr/share/mime/packages/printcraft.xml", "packaging/linux/org.printcraft.PrintCraft.metainfo.xml" = "usr/share/metainfo/org.printcraft.PrintCraft.metainfo.xml" }
+
+[package.metadata.packager.appimage]
+bins = []
+
+# .rpm via `cargo generate-rpm` (cargo-generate-rpm)
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/printcraft", dest = "/usr/bin/printcraft", mode = "755" },
+    { source = "target/release/printcraft-web", dest = "/usr/bin/printcraft-web", mode = "755" },
+    { source = "packaging/linux/printcraft.desktop", dest = "/usr/share/applications/org.printcraft.PrintCraft.desktop", mode = "644" },
+    { source = "packaging/linux/printcraft-mime.xml", dest = "/usr/share/mime/packages/printcraft.xml", mode = "644" },
+    { source = "packaging/linux/org.printcraft.PrintCraft.metainfo.xml", dest = "/usr/share/metainfo/org.printcraft.PrintCraft.metainfo.xml", mode = "644" },
+    { source = "packaging/icons/printcraft-16.png", dest = "/usr/share/icons/hicolor/16x16/apps/org.printcraft.PrintCraft.png", mode = "644" },
+    { source = "packaging/icons/printcraft-24.png", dest = "/usr/share/icons/hicolor/24x24/apps/org.printcraft.PrintCraft.png", mode = "644" },
+    { source = "packaging/icons/printcraft-32.png", dest = "/usr/share/icons/hicolor/32x32/apps/org.printcraft.PrintCraft.png", mode = "644" },
+    { source = "packaging/icons/printcraft-48.png", dest = "/usr/share/icons/hicolor/48x48/apps/org.printcraft.PrintCraft.png", mode = "644" },
+    { source = "packaging/icons/printcraft-64.png", dest = "/usr/share/icons/hicolor/64x64/apps/org.printcraft.PrintCraft.png", mode = "644" },
+    { source = "packaging/icons/printcraft-128.png", dest = "/usr/share/icons/hicolor/128x128/apps/org.printcraft.PrintCraft.png", mode = "644" },
+    { source = "packaging/icons/printcraft-256.png", dest = "/usr/share/icons/hicolor/256x256/apps/org.printcraft.PrintCraft.png", mode = "644" },
+    { source = "packaging/icons/printcraft-512.png", dest = "/usr/share/icons/hicolor/512x512/apps/org.printcraft.PrintCraft.png", mode = "644" },
+]
+release = "1"
+summary = "Make greeting cards, signs, banners and labels, then print them"
+license = "GPL-3.0-or-later"
+[package.metadata.generate-rpm.requires]
+mesa-libGL = "*"
+libxkbcommon = "*"
+"webkit2gtk4.1" = "*"
