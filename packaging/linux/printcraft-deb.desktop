@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=PrintCraft
+GenericName=Card and Sign Maker
+Comment=Make greeting cards, signs, banners, labels and more, then print them
+Exec=printcraft %f
+Icon=printcraft
+Terminal=false
+Categories=Graphics;Publishing;Office;
+Keywords=card;greeting;banner;sign;label;poster;certificate;calendar;print;
+MimeType=application/x-printcraft;image/png;image/jpeg;
+StartupWMClass=printcraft
